@@ -751,7 +751,7 @@ $ agent-atv screenshot
 /var/folders/…/agent-atv/screenshot-A1B2C3D4E5F6-20261101-150405.png (3840x2160, 2.1s)
 ```
 - `--max-width <px>` (160–3840) sends `maxWidth`, `--jpeg` sends `format: "jpeg"`: a 1280-wide JPEG
-  is about 110 KB where the 4K PNG is MBs, for about 0.5 s more on a Pi. Out of range → `USAGE` with
+  is about 110 KB where the 4K PNG is MBs, for about 1 s more on a Pi. Out of range → `USAGE` with
   the range and the hint `e.g. agent-atv screenshot --max-width 1280 --jpeg`, before any request.
 - `--if-changed`: sends `ifNoneMatch`, the last sha256 for that device from `<cache>/last-screenshot.json`
   (`{sha256, path}` keyed by device id; the options are not stored), next to `maxWidth` and `format`. On
@@ -1242,7 +1242,10 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   re-encodes the PNG with Pillow (a pymobiledevice3 dependency, also listed in `requirements-screen.txt`)
   on a thread, off the event loop: `thumbnail` to `maxWidth` keeping the aspect ratio and never
   scaling up, JPEG at Pillow's default quality. A PNG already no wider than `maxWidth` is written as
-  captured. Measured on a Pi: a 1280-wide JPEG is about 112 KB, for about 0.5 s more.
+  captured. Measured on a Pi 4 (tvOS 27.2): `get_screenshot` brings the PNG through the userspace
+  tunnel at 2 to 2.6 MB/s, about half of it CPU in the worker, so an 18 to 29 MB frame takes 7 to 14 s;
+  opening DVT and its channel takes about 0.15 s; a 1280-wide JPEG (85 to 165 KB) takes 1 to 1.35 s
+  more and shrinks only the HTTP answer, not the capture.
 - **Pairing**: `bonjour.browse_remotepairing_manual_pairing()` (advertised while the Apple TV shows
   *Settings > Remotes and Devices > Remote App and Devices*, the screen of the pyatv PINs), the answer
   whose addresses include the device address (else the only answer; its IPv4 address preferred), then

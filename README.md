@@ -280,7 +280,7 @@ Reading the focus takes about 0.2 s; `--settle` waits up to 1 s for it to settle
 the focus only when it moves, so the plugin says the focus is not known rather than guess: right
 after Homebridge starts, after the screen, the app or the playback changed, and after a key that
 moved nothing, until the next move. A 4K screenshot takes
-0.5 s to 10 s on a Pi depending on its size (HDR frames reach 30 MB), so agents use
+up to about 15 s on a Pi depending on its size (frames reach 30 MB), so agents use
 `screenshot --if-changed`, and `--max-width 1280 --jpeg` (about 110 KB) when the full resolution
 isn't needed, which matters most over a slow remote link. DRM-protected video captures black.
 

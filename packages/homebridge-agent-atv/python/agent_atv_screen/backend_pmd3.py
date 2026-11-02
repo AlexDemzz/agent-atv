@@ -605,7 +605,7 @@ class Pmd3Backend:
         assert self._capture_lock is not None
         async with self._capture_lock:
             png = await self._with_rsd(self._capture)
-        # About 0.5 s on a Pi for a 4K frame: off the loop, which follows the focus meanwhile.
+        # About 1 s on a Pi for a 4K frame: off the loop, which follows the focus meanwhile.
         data = await asyncio.to_thread(image.encode, png, *image.options(params))
         image.write_private(params["path"], data)
         return {"bytes": len(data)}
