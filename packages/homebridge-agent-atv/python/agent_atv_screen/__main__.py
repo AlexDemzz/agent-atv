@@ -23,9 +23,10 @@ def _setup_logging() -> None:
     handler.setFormatter(_LineFormatter("%(levelname)s %(name)s: %(message)s"))
     root = logging.getLogger()
     root.addHandler(handler)
-    root.setLevel(logging.DEBUG if debug else logging.INFO)
-    for noisy in ("pymobiledevice3", "asyncio", "quic", "pytcp"):
-        logging.getLogger(noisy).setLevel(logging.DEBUG if debug else logging.WARNING)
+    # The plugin logs INFO lines at info level: only the worker's own, which are status changes.
+    root.setLevel(logging.DEBUG if debug else logging.WARNING)
+    if not debug:
+        logging.getLogger("agent_atv_screen").setLevel(logging.INFO)
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -54,9 +55,9 @@ async def _run(args: argparse.Namespace) -> None:
     loop.add_signal_handler(signal.SIGTERM, stop.set)
     reader = asyncio.StreamReader(limit=MAX_LINE_BYTES)
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
-    _LOGGER.info("Starting with the %s backend", backend.name)
+    _LOGGER.debug("Starting with the %s backend", backend.name)
     await serve(backend, reader, _StdoutWriter(), stop=stop)
-    _LOGGER.info("Stopped")
+    _LOGGER.debug("Stopped")
 
 
 def main(argv: list) -> int:

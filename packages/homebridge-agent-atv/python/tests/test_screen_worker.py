@@ -8,6 +8,7 @@ import os
 import struct
 import tempfile
 import unittest
+import zlib
 
 from agent_atv_screen.backend_pmd3 import Pmd3Backend, Timings
 from agent_atv_screen.server import serve
@@ -19,6 +20,22 @@ RECORD = "0A1B2C3D-0000-4000-8000-00000000AA01"
 # The late retarget makes the focus unknown: out of reach here, it fires only in LostSessionTest.
 FAST = Timings(retry_s=(0.05, 0.1), health_s=0.05, call_timeout_s=0.5, connect_timeout_s=0.5, browse_s=0.3, session_close_s=0.05, retarget_s=60)
 RETARGET = dataclasses.replace(FAST, retarget_s=0.15)
+
+try:
+    from PIL import Image
+except ImportError:  # Pillow comes with the screen venv (requirements-screen.txt)
+    Image = None
+
+
+def decodable_png(width: int, height: int) -> bytes:
+    """A real RGB PNG, unlike fake_png's header-only one, for the captures the worker re-encodes."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    rows = b"".join(b"\x00" + b"\x20\x80\xe0" * width for _ in range(height))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
 class ScreenWorkerTestCase(unittest.IsolatedAsyncioTestCase):
@@ -399,6 +416,20 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual(error["code"], "SCREEN_FAILED")
         self.assertIn("daemon gone", error["message"])
 
+    async def test_logs_a_session_that_keeps_failing_to_open_once_then_its_recovery(self) -> None:
+        await self.connected()
+        with self.assertLogs("agent_atv_screen", "INFO") as logs:
+            self.pmd3.ax_broken = ConnectionResetError("daemon gone")
+            self.pmd3.open_tunnels[0].fake_drop()
+            await asyncio.sleep(FAST.health_s * 8)
+            self.pmd3.ax_broken = None
+            await asyncio.sleep(FAST.health_s * 4)
+
+        failures = [line for line in logs.output if "Cannot follow the focus" in line]
+        self.assertEqual(len(failures), 1, logs.output)
+        self.assertIn("daemon gone", failures[0])
+        self.assertTrue(any("Following the focus again" in line for line in logs.output), logs.output)
+
     async def test_waits_for_the_tunnel_when_asked_while_connecting(self) -> None:
         self.pmd3.tunnel_delay_s = 0.2
         error = await self.worker.error("focus")
@@ -429,6 +460,13 @@ class LostSessionTest(ScreenWorkerTestCase):
 
         await self.move_focus(ARROW)
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
+
+    async def test_logs_the_late_retarget_at_info(self) -> None:
+        await self.connected()
+        with self.assertLogs("agent_atv_screen", "INFO") as logs:
+            await asyncio.sleep(RETARGET.retarget_s + 0.05)
+
+        self.assertTrue(any("targeted the accessibility session again" in line for line in logs.output), logs.output)
 
     async def test_the_focus_is_unknown_once_followed_again_after_moves_the_disposal_hid(self) -> None:
         await self.connected()
@@ -490,6 +528,58 @@ class ScreenshotTest(ScreenWorkerTestCase):
     async def test_requires_an_absolute_path(self) -> None:
         error = await self.worker.error("screenshot", {"path": "shot.png"})
         self.assertEqual((error["code"], error["details"]), ("BAD_REQUEST", {"field": "path"}))
+
+    def shot_path(self, name: str) -> str:
+        path = os.path.join(tempfile.mkdtemp(), name)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        return path
+
+    @unittest.skipIf(Image is None, "Pillow is not installed")
+    async def test_writes_a_jpeg_scaled_down_to_max_width_keeping_the_aspect_ratio(self) -> None:
+        await self.connected()
+        self.pmd3.png = decodable_png(640, 360)
+        path = self.shot_path("shot.jpg")
+
+        result = await self.worker.call("screenshot", {"path": path, "maxWidth": 320, "format": "jpeg"})
+
+        with Image.open(path) as image:
+            self.assertEqual((image.format, image.size), ("JPEG", (320, 180)))
+        self.assertEqual(result["bytes"], os.path.getsize(path))
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    @unittest.skipIf(Image is None, "Pillow is not installed")
+    async def test_never_scales_up_and_keeps_the_captured_png_when_it_fits(self) -> None:
+        await self.connected()
+        self.pmd3.png = decodable_png(640, 360)
+        path = self.shot_path("shot.png")
+
+        await self.worker.call("screenshot", {"path": path, "maxWidth": 1280})
+
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), self.pmd3.png)
+
+    @unittest.skipIf(Image is None, "Pillow is not installed")
+    async def test_scales_a_png_down_without_changing_its_format(self) -> None:
+        await self.connected()
+        self.pmd3.png = decodable_png(640, 360)
+        path = self.shot_path("shot.png")
+
+        await self.worker.call("screenshot", {"path": path, "maxWidth": 160, "format": "png"})
+
+        with Image.open(path) as image:
+            self.assertEqual((image.format, image.size), ("PNG", (160, 90)))
+
+    async def test_rejects_an_unknown_format_or_a_max_width_that_is_not_a_positive_integer(self) -> None:
+        path = self.shot_path("shot.png")
+        for params, field in (
+            ({"format": "gif"}, "format"),
+            ({"maxWidth": 0}, "maxWidth"),
+            ({"maxWidth": 12.5}, "maxWidth"),
+            ({"maxWidth": "1280"}, "maxWidth"),
+            ({"maxWidth": True}, "maxWidth"),
+        ):
+            error = await self.worker.error("screenshot", {"path": path, **params})
+            self.assertEqual((error["code"], error["details"]), ("BAD_REQUEST", {"field": field}), params)
 
 
 class ForegroundTest(ScreenWorkerTestCase):
@@ -658,6 +748,19 @@ class FakeWorkerStdioTest(unittest.TestCase):
         with open(path, "rb") as f:
             self.assertEqual(struct.unpack(">II", f.read(24)[16:24]), (1920, 1080))
         os.remove(path)
+
+    def test_its_scaled_down_jpeg_carries_the_scaled_size(self) -> None:
+        worker = self.start("--identifier", "FAKE-REMOTEPAIRING-0001")
+        path = os.path.join(tempfile.mkdtemp(), "fake.jpg")
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+
+        self.assertTrue(worker.request("screenshot", {"path": path, "maxWidth": 1280, "format": "jpeg"})["ok"])
+
+        with open(path, "rb") as f:
+            data = f.read()
+        # SOI, then a baseline SOF0 segment: length, precision, height, width.
+        self.assertEqual(data[:4], b"\xff\xd8\xff\xc0")
+        self.assertEqual(struct.unpack(">HH", data[7:11]), (720, 1280))
 
     def test_its_apple_tv_shows_the_home_screen(self) -> None:
         worker = self.start("--identifier", "FAKE-REMOTEPAIRING-0001")

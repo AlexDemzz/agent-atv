@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import queue
 import threading
 from dataclasses import dataclass
@@ -17,6 +16,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from agent_atv_bridge.errors import BridgeError
+
+from . import image
 
 _LOGGER = logging.getLogger("agent_atv_screen.pmd3")
 
@@ -224,6 +225,7 @@ class Pmd3Backend:
         # killed worker's, which a starting worker cannot rule out.
         self._lost_session_pending = True
         self._retarget: Optional[asyncio.Task] = None
+        self._follow_failing = False
         # Why the focused element is not known, or None once tvOS reported a move.
         self._unknown: Optional[str] = NOT_FOLLOWED
         self._focused: Any = None
@@ -324,7 +326,14 @@ class Pmd3Backend:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            _LOGGER.info("Cannot follow the focus yet (%s); the next focus read retries", _describe(exc))
+            # Retried at every health check: only the first failure of a streak is news.
+            log = _LOGGER.debug if self._follow_failing else _LOGGER.info
+            log("Cannot follow the focus yet (%s); the next focus read retries", _describe(exc))
+            self._follow_failing = True
+            return
+        if self._follow_failing:
+            self._follow_failing = False
+            _LOGGER.info("Following the focus again")
 
     def _finish_attempt(self) -> None:
         finished, self._attempt_finished = self._attempt_finished, asyncio.Event()
@@ -490,9 +499,13 @@ class Pmd3Backend:
         await asyncio.sleep(self._timings.retarget_s)
         try:
             await asyncio.wait_for(self._target(ax), self._timings.call_timeout_s)
-        except Exception:
-            _LOGGER.debug("Targeting the accessibility session again failed", exc_info=True)
+        except Exception as exc:
+            _LOGGER.info("Targeting the accessibility session again failed (%s); focus reads may answer unknown until the next reconnect", _describe(exc))
             return
+        _LOGGER.info(
+            "A session lost earlier may have untargeted this one: targeted the accessibility session again;"
+            " the focus is known again after the next move"
+        )
         self._lost_session_pending = False
         # The Apple TV did not report the moves made while the session was untargeted.
         self._unknown, self._focused = NOT_FOLLOWED, None
@@ -592,10 +605,10 @@ class Pmd3Backend:
         assert self._capture_lock is not None
         async with self._capture_lock:
             png = await self._with_rsd(self._capture)
-        descriptor = os.open(params["path"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "wb") as out:
-            out.write(png)
-        return {"bytes": len(png)}
+        # About 0.5 s on a Pi for a 4K frame: off the loop, which follows the focus meanwhile.
+        data = await asyncio.to_thread(image.encode, png, *image.options(params))
+        image.write_private(params["path"], data)
+        return {"bytes": len(data)}
 
     async def _capture(self, rsd: Any) -> bytes:
         async with self._pmd3.dvt_provider.DvtProvider(rsd) as dvt, self._pmd3.screenshot.Screenshot(dvt) as shot:

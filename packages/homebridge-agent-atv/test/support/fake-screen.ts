@@ -46,6 +46,17 @@ export function png(width: number, height: number, label = 'frame'): Buffer {
   ]);
 }
 
+/** Only the markers that carry the size, as the Python fake worker writes them: SOI, SOF0, EOI. */
+export function jpeg(width: number, height: number): Buffer {
+  const sof = Buffer.alloc(17);
+  sof.writeUInt16BE(17, 0);
+  sof.writeUInt8(8, 2);
+  sof.writeUInt16BE(height, 3);
+  sof.writeUInt16BE(width, 5);
+  sof.writeUInt8(3, 7);
+  return Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0]), sof, Buffer.from([0xff, 0xd9])]);
+}
+
 /**
  * Scripts `worker` as the screen worker of one Apple TV (DESIGN.md §6.2), close to the Python
  * worker's fake backend. `reads` queues the next focus reads; the last one repeats. `movedAt` is

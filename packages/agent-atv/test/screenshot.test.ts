@@ -135,6 +135,36 @@ describe('screenshot', () => {
     expect(JSON.parse(result.stdout)).toEqual({ path, sha256: SHA, width: 3840, height: 2160, changed: true });
   });
 
+  it('asks for a scaled-down JPEG with --max-width and --jpeg and names the default file .jpg', async () => {
+    api.on('POST', `${DEVICE}/screenshot`, { ...pngReply(), headers: { ...pngReply().headers, 'content-type': 'image/jpeg' } });
+
+    const result = await sandbox.run(['screenshot', '--max-width', '1280', '--jpeg', '--if-changed']);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout.split(' (')[0]).toMatch(/screenshot-A1B2C3D4E5F6-\d{8}-\d{6}\.jpg$/);
+    expect(screenshotBodies()).toEqual([{ maxWidth: 1280, format: 'jpeg' }]);
+  });
+
+  it('sends the options along with ifNoneMatch on --if-changed', async () => {
+    api.on('POST', `${DEVICE}/screenshot`, pngReply(), { status: 304, raw: '' });
+
+    await sandbox.run(['screenshot', join(sandbox.root, 'a.png'), '--max-width', '960']);
+    const result = await sandbox.run(['screenshot', join(sandbox.root, 'b.png'), '--max-width', '960', '--if-changed']);
+
+    expect(screenshotBodies()).toEqual([{ maxWidth: 960 }, { maxWidth: 960, ifNoneMatch: SHA }]);
+    expect(result.stdout).toBe(`unchanged ${join(sandbox.root, 'a.png')}\n`);
+  });
+
+  it('rejects a --max-width out of range with the range and an example', async () => {
+    const result = await sandbox.run(['screenshot', '--max-width', '50']);
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toBe(
+      'error: --max-width must be between 160 and 3840, got 50 (USAGE)\nhint: e.g. agent-atv screenshot --max-width 1280 --jpeg\n',
+    );
+    expect(screenshotBodies()).toEqual([]);
+  });
+
   it('exits 8 with the hint when screen reading is not paired', async () => {
     api.on('POST', `${DEVICE}/screenshot`, {
       status: 503,

@@ -8,7 +8,7 @@ import type { App, Json } from '../bridge/protocol';
 import type { Device, DeviceManager } from '../devices/manager';
 import { ensureDir } from '../fs-util';
 import { errorMessage, type Logger } from '../logger';
-import { pngSize } from './png';
+import { jpegSize, pngSize } from './png';
 
 export interface FocusElement {
   label: string | null;
@@ -66,10 +66,21 @@ interface Worker {
   client: BridgeClient<WorkerReady>;
   spec: SpawnSpec;
   status: WorkerStatus | null;
+  /** The last tunnel state logged at info. */
+  announced: Tunnel | null;
+}
+
+export type ImageFormat = 'png' | 'jpeg';
+
+export interface CaptureOptions {
+  /** Scales the capture down to this width, keeping its aspect ratio; never up. */
+  maxWidth?: number;
+  format?: ImageFormat;
 }
 
 export interface Capture {
-  png: Buffer;
+  image: Buffer;
+  format: ImageFormat;
   sha256: string;
   width: number;
   height: number;
@@ -356,18 +367,21 @@ export class ScreenService {
     return Promise.race([read, timeout]).finally(() => clearTimeout(timer));
   }
 
-  /** Captures one screenshot through the device's worker (one at a time per device). */
-  async capture(device: Device, ifNoneMatch: string | undefined): Promise<CaptureResult> {
+  /**
+   * Captures one screenshot through the device's worker (one at a time per device). The sha256 is
+   * of the bytes returned, so `ifNoneMatch` only matches a capture taken with the same options.
+   */
+  async capture(device: Device, ifNoneMatch: string | undefined, { maxWidth, format = 'png' }: CaptureOptions = {}): Promise<CaptureResult> {
     const started = Date.now();
-    const out = path.join(tmpdir(), `agent-atv-${randomBytes(8).toString('hex')}.png`);
+    const out = path.join(tmpdir(), `agent-atv-${randomBytes(8).toString('hex')}.${format === 'jpeg' ? 'jpg' : 'png'}`);
     try {
-      await this.request(device, 'screenshot', { path: out });
-      const png = await readFile(out);
-      const size = pngSize(png);
-      if (!size) throw new ApiError('SCREEN_FAILED', 'The Apple TV sent something that is not a PNG', {});
-      const sha256 = createHash('sha256').update(png).digest('hex');
+      await this.request(device, 'screenshot', { path: out, format, ...(maxWidth === undefined ? {} : { maxWidth }) });
+      const image = await readFile(out);
+      const size = format === 'jpeg' ? jpegSize(image) : pngSize(image);
+      if (!size) throw new ApiError('SCREEN_FAILED', `The Apple TV sent something that is not a ${format.toUpperCase()}`, {});
+      const sha256 = createHash('sha256').update(image).digest('hex');
       if (ifNoneMatch === sha256) return { changed: false, sha256 };
-      return { changed: true, png, sha256, ...size, capturedAt: new Date().toISOString(), durationMs: Date.now() - started };
+      return { changed: true, image, format, sha256, ...size, capturedAt: new Date().toISOString(), durationMs: Date.now() - started };
     } finally {
       await rm(out, { force: true });
     }
@@ -493,10 +507,12 @@ export class ScreenService {
       log: this.options.log,
       label: `screen worker for ${name}`,
       logPrefix: `screen ${name}`,
+      // The worker logs status changes at INFO, the rest at DEBUG (DESIGN.md §6.2).
+      infoLevel: 'info',
       timeoutFor: (method) => TIMEOUTS[method] ?? DEFAULT_TIMEOUT_MS,
       describeReady: (ready) => `${name}: screen worker ready (${ready?.backend ?? '?'}, pymobiledevice3 ${ready?.pymobiledevice3 ?? 'n/a'})`,
     });
-    const worker: Worker = { client, spec, status: null };
+    const worker: Worker = { client, spec, status: null, announced: null };
     client.on('exit', () => {
       worker.status = null;
       // The restart picks up a new address (DHCP) or pair record.
@@ -514,15 +530,34 @@ export class ScreenService {
     const previous = worker.status;
     worker.status = status;
     const name = this.options.devices.displayName(device);
-    if (status.tunnel !== previous?.tunnel) {
-      const detail = status.error ? ` (${status.error})` : '';
-      this.options.log.debug(`${name}: screen reading ${status.tunnel}${detail}`);
-    }
+    if (status.tunnel !== previous?.tunnel) this.announce(device, worker, status);
     if (status.identifier && status.identifier !== device.record?.remotePairing?.identifier) {
       this.remember(device, status.identifier).catch((error: unknown) =>
         this.options.log.error(`${name}: cannot save the RemotePairing identifier: ${errorMessage(error)}`),
       );
     }
+  }
+
+  /**
+   * Tunnel changes at info, so a field failure shows in the normal log; while a reconnect keeps
+   * failing (every 2 to 60 s), only its first failure.
+   */
+  private announce(device: Device, worker: Worker, status: WorkerStatus): void {
+    const name = this.options.devices.displayName(device);
+    const detail = status.error ? ` (${status.error})` : '';
+    const retrying = status.tunnel === 'connecting' && worker.announced === 'disconnected';
+    if (status.tunnel === worker.announced || retrying) {
+      this.options.log.debug(`${name}: screen reading ${status.tunnel}${detail}`);
+      return;
+    }
+    const lines: Record<Tunnel, string> = {
+      connected: 'connected',
+      connecting: worker.announced === 'connected' ? 'reconnecting' : 'connecting',
+      disconnected: `disconnected${detail}; retrying with backoff`,
+      unpaired: `not paired${detail}; pair it with agent-atv pair ${device.id} --screen`,
+    };
+    worker.announced = status.tunnel;
+    this.options.log.info(`${name}: screen reading ${lines[status.tunnel]}`);
   }
 
   private async remember(device: Device, identifier: string): Promise<void> {

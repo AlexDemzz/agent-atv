@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { booleanFlag } from '../args.js';
+import { booleanFlag, integerFlag } from '../args.js';
 import { devicePath } from '../client.js';
 import { cacheDir } from '../config.js';
 import type { Command, Context } from '../context.js';
@@ -68,9 +68,26 @@ function privateScreenshotDir(): string {
   return dir;
 }
 
-export function defaultScreenshotPath(deviceId: string): string {
+export interface CaptureOptions {
+  maxWidth?: number;
+  format?: 'jpeg';
+}
+
+export function defaultScreenshotPath(deviceId: string, extension = 'png'): string {
   const safeId = deviceId.replace(/[^A-Za-z0-9._-]/g, '_');
-  return join(privateScreenshotDir(), `screenshot-${safeId}-${timestamp(new Date())}.png`);
+  return join(privateScreenshotDir(), `screenshot-${safeId}-${timestamp(new Date())}.${extension}`);
+}
+
+const MAX_WIDTH = { min: 160, max: 3840 };
+
+function captureOptions(ctx: Context): CaptureOptions {
+  let maxWidth: number | undefined;
+  try {
+    maxWidth = integerFlag(ctx.args, 'max-width', MAX_WIDTH.min, MAX_WIDTH.max);
+  } catch (error) {
+    throw usageError((error as Error).message, 'e.g. agent-atv screenshot --max-width 1280 --jpeg');
+  }
+  return { ...(maxWidth === undefined ? {} : { maxWidth }), ...(booleanFlag(ctx.args, 'jpeg') ? { format: 'jpeg' as const } : {}) };
 }
 
 export async function capture(
@@ -78,11 +95,12 @@ export async function capture(
   deviceId: string,
   target: string | undefined,
   ifChanged: boolean,
+  options: CaptureOptions = {},
 ): Promise<Capture> {
   const previous = ifChanged ? readCache(ctx)[deviceId] : undefined;
   const client = ctx.client();
   const response = await client.raw('POST', devicePath(ctx.device(), '/screenshot'), {
-    body: previous ? { ifNoneMatch: previous.sha256 } : {},
+    body: { ...options, ...(previous ? { ifNoneMatch: previous.sha256 } : {}) },
     timeoutMs: Math.max(client.timeoutMs, CAPTURE_TIMEOUT_MS),
   });
   if (response.status === 304 && previous) {
@@ -90,7 +108,9 @@ export async function capture(
   }
 
   const png = Buffer.from(await response.arrayBuffer());
-  const path = resolve(target ?? defaultScreenshotPath(deviceId));
+  // From what came back: a plugin older than --jpeg answers a PNG.
+  const extension = response.headers.get('content-type') === 'image/jpeg' ? 'jpg' : 'png';
+  const path = resolve(target ?? defaultScreenshotPath(deviceId, extension));
   try {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, png);
@@ -111,14 +131,15 @@ export async function capture(
 
 export const screenshot: Command = {
   name: 'screenshot',
-  usage: 'screenshot [path]',
-  summary: 'observe: capture the TV screen as PNG (--if-changed skips unchanged)',
-  flags: [{ name: 'if-changed' }],
+  usage: 'screenshot [path] [--max-width <px>] [--jpeg] [--if-changed]',
+  summary: 'observe: capture the TV screen as PNG (--max-width/--jpeg shrink it, --if-changed skips unchanged)',
+  flags: [{ name: 'if-changed' }, { name: 'max-width', value: 'required' }, { name: 'jpeg' }],
   async run(ctx) {
     const [target, ...extra] = ctx.args.positionals;
     if (extra.length > 0) throw usageError('screenshot takes at most one path', 'e.g. agent-atv screenshot ./tv.png');
+    const options = captureOptions(ctx);
     const { device } = await fetchState(ctx);
-    const result = await capture(ctx, device.id, target, booleanFlag(ctx.args, 'if-changed'));
+    const result = await capture(ctx, device.id, target, booleanFlag(ctx.args, 'if-changed'), options);
     if (!result.changed) {
       if (ctx.json) return ctx.printJson({ changed: false, sha256: result.sha256, path: result.path });
       return ctx.print(`unchanged ${result.path}`);

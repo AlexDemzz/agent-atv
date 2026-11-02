@@ -1,3 +1,6 @@
 # pymobiledevice3 for the screen worker (DESIGN.md §6). Its dependencies resolve at install time.
 # On Python < 3.13 it builds sslpsk-pmd3 from source, which needs a C compiler and the Python and OpenSSL headers.
 pymobiledevice3==11.49.1
+# Scales screenshots down and encodes them as JPEG (screenshot maxWidth and format). Already a
+# pymobiledevice3 dependency; listed because the worker imports it, and left to resolve with it.
+Pillow
