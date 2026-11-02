@@ -1252,10 +1252,12 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   re-encodes the PNG with Pillow (a pymobiledevice3 dependency, also listed in `requirements-screen.txt`)
   on a thread, off the event loop: `thumbnail` to `maxWidth` keeping the aspect ratio and never
   scaling up, JPEG at Pillow's default quality. A PNG already no wider than `maxWidth` is written as
-  captured. Measured on a Pi 4 (tvOS 27.2): `get_screenshot` brings the PNG through the userspace
-  tunnel at 2 to 2.6 MB/s, about half of it CPU in the worker, so an 18 to 29 MB frame takes 7 to 14 s;
-  opening DVT and its channel takes about 0.15 s; a 1280-wide JPEG (85 to 165 KB) takes 1 to 1.35 s
-  more and shrinks only the HTTP answer, not the capture.
+  captured. Measured on a Pi 4 (tvOS 27.2): the Apple TV takes about 1 to 1.3 s to render and encode
+  the PNG before its first byte; with the inbound queue (above) the rest crosses the tunnel at about
+  8 MB/s (2 to 3 MB/s without it), so through the API a 20 to 29 MB home-screen PNG takes 4.1 to
+  5.5 s (8 to 15 s without the queue) and a 13 to 16 MB static Settings PNG 3.1 to 4.1 s (8.2 to
+  9.7 s); opening DVT and its channel takes about 0.15 s; a 1280-wide JPEG (85 to 165 KB) takes about
+  0.5 to 1 s more and shrinks only the HTTP answer, not the capture.
 - **Pairing**: `bonjour.browse_remotepairing_manual_pairing()` (advertised while the Apple TV shows
   *Settings > Remotes and Devices > Remote App and Devices*, the screen of the pyatv PINs), the answer
   whose addresses include the device address (else the only answer; its IPv4 address preferred), then
@@ -1271,7 +1273,7 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
 Measured on a Raspberry Pi (Debian 12, Python 3.11) against an Apple TV 4K on tvOS 27.2, without
 root: imports about 2.5 s; tunnel up 1.4–3.5 s warm (5.9–7.6 s right after an Apple TV reboot); focus
 event about 50 ms after a key press, then about 0.2 s per read; screenshot 0.5–0.65 s for a home-screen PNG, 8–11 s for an
-18–20 MB HDR frame of the aerial screensaver; worker RSS 100–135 MB.
+18–20 MB HDR frame of the aerial screensaver (about 5 s with the inbound queue); worker RSS 100–135 MB.
 
 ### 6.2 Screen worker (`python -m agent_atv_screen`)
 
@@ -1507,7 +1509,7 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
    unmeasured in apps: whether, after a move that sent no event, the daemon confirms the previous
    element after a layout change; a plain read would then show it, while `--settle` still rejects it
    as older than the keys. Each move flashes the daemon's highlight for one round trip.
-   Screenshots of HDR content are 18–33 MB and take up to about 10 s on a Pi; `maxWidth` and
+   Screenshots of HDR content are 18–33 MB and take about 4 to 6 s on a Pi; `maxWidth` and
    `format: "jpeg"` (Pillow, §6.1) shrink what crosses the network, not the capture itself. The persistent tunnel's effect on the Apple TV's sleep is unmeasured.
 4. **The RemotePairing PIN length** isn't documented by Apple; the API accepts 4 to 8 digits for that
    step.
