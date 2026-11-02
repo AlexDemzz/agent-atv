@@ -1,0 +1,59 @@
+{
+  "name": "homebridge-agent-atv",
+  "displayName": "Agent ATV",
+  "version": "0.1.0",
+  "description": "Control an Apple TV from AI agents: an authenticated HTTP API (pyatv bridge), keyboard input, wait conditions, optional screen reading (focused element, screenshots), and a minimal HomeKit TV accessory.",
+  "license": "MIT",
+  "author": "AlexDemzz",
+  "homepage": "https://github.com/AlexDemzz/agent-atv/tree/main/packages/homebridge-agent-atv#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexDemzz/agent-atv.git",
+    "directory": "packages/homebridge-agent-atv"
+  },
+  "bugs": {
+    "url": "https://github.com/AlexDemzz/agent-atv/issues"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "supports-hap",
+    "homebridge",
+    "apple-tv",
+    "appletv",
+    "tvos",
+    "pyatv",
+    "ai-agent",
+    "agent-atv"
+  ],
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "config.schema.json",
+    "homebridge-ui",
+    "python/requirements.txt",
+    "python/requirements-screen.txt",
+    "python/agent_atv_bridge",
+    "python/agent_atv_screen",
+    "README.md",
+    "LICENSE",
+    "!**/__pycache__"
+  ],
+  "engines": {
+    "homebridge": "^1.8.0 || ^2.0.0",
+    "node": "^22.12.0 || ^24.0.0 || ^26.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "lint": "eslint --no-error-on-unmatched-pattern src test homebridge-ui",
+    "test": "vitest run --maxWorkers=2"
+  },
+  "dependencies": {
+    "@homebridge/plugin-ui-utils": "^2.2.7"
+  },
+  "devDependencies": {
+    "@homebridge/hap-nodejs": "^2.3.0",
+    "homebridge": "^2.5.0"
+  }
+}

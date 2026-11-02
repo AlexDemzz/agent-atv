@@ -1,0 +1,443 @@
+<style>
+  .agent-atv {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    margin-block-end: 1.5rem;
+  }
+
+  .agent-atv section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .agent-atv h2 {
+    font-size: 1.1rem;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .agent-atv .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+
+  .agent-atv .toolbar > .status {
+    margin-inline-start: auto;
+  }
+
+  .agent-atv .device-id,
+  .agent-atv code,
+  .agent-atv pre {
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  .agent-atv .pin-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 0.5rem;
+  }
+
+  .agent-atv .pin-form input {
+    inline-size: 8ch;
+    font-size: max(16px, 1rem);
+    letter-spacing: 0.2em;
+    text-align: center;
+  }
+
+  .agent-atv .token-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .agent-atv .token-row input {
+    flex: 1 1 20rem;
+    min-inline-size: 0;
+    font-family: monospace;
+    font-size: max(16px, 1rem);
+  }
+
+  .agent-atv pre {
+    margin: 0;
+    padding: 0.75rem;
+    white-space: pre-wrap;
+  }
+
+  .agent-atv :focus-visible {
+    outline: max(2px, 0.08em) solid currentColor;
+    outline-offset: 0.25em;
+  }
+
+  .agent-atv [hidden] {
+    display: none !important;
+  }
+</style>
+
+<div class="agent-atv">
+  <section aria-labelledby="devices-title">
+    <div class="toolbar">
+      <h2 id="devices-title">Apple TVs</h2>
+      <button type="button" class="btn btn-primary btn-sm" id="scan">Scan the network</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="refresh">Refresh</button>
+      <span class="status small text-muted" id="bridge-status" aria-live="polite"></span>
+    </div>
+    <div class="form-check mb-0" id="screen-option" hidden>
+      <input class="form-check-input" type="checkbox" id="with-screen" />
+      <label class="form-check-label" for="with-screen">Also enable screen reading (about 350 MB, one more PIN)</label>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Id</th>
+            <th scope="col">Connection</th>
+            <th scope="col">Paired</th>
+            <th scope="col">Screen reading</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody id="device-rows">
+          <tr>
+            <td colspan="6" class="text-muted">Loading…</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="pairing" aria-labelledby="pairing-title" hidden>
+    <h2 id="pairing-title">Pairing</h2>
+    <p class="mb-0" id="pairing-message" aria-live="polite"></p>
+    <form class="pin-form" id="pin-form" novalidate>
+      <label class="form-label mb-0">
+        <span class="d-block small">PIN</span>
+        <input
+          type="text"
+          class="form-control"
+          id="pin"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          pattern="[0-9]{4,8}"
+          maxlength="8"
+          required
+        />
+      </label>
+      <button type="submit" class="btn btn-primary">Send PIN</button>
+      <button type="button" class="btn btn-secondary" id="cancel-pairing">Cancel</button>
+    </form>
+  </section>
+
+  <section aria-labelledby="token-title">
+    <h2 id="token-title">API token for the agent-atv CLI</h2>
+    <div class="token-row">
+      <label for="token" class="visually-hidden">API token</label>
+      <input type="password" class="form-control" id="token" readonly value="" />
+      <button type="button" class="btn btn-secondary" id="show-token" aria-pressed="false">Show</button>
+      <button type="button" class="btn btn-secondary" id="copy-token">Copy</button>
+    </div>
+    <p class="small mb-0">On the Mac that runs the agent:</p>
+    <pre class="border rounded" id="cli-snippet"></pre>
+    <p class="small text-muted mb-0">
+      The second command reads the token from stdin: paste it, press Enter, then Ctrl-D. The token gives full control of
+      your Apple TVs; keep it private.
+    </p>
+  </section>
+</div>
+
+<script>
+  (() => {
+    const $ = (id) => document.getElementById(id);
+    let pairing = null;
+    let armedUnpair = null;
+
+    const SCREEN_LABELS = {
+      off: 'off',
+      starting: 'starting',
+      unpaired: 'not paired',
+      connecting: 'connecting',
+      connected: 'on',
+      disconnected: 'reconnecting',
+    };
+
+    const errorText = (error) => {
+      const hint = error?.error?.hint;
+      return hint ? `${error.message} ${hint}` : error?.message ?? String(error);
+    };
+
+    const call = async (path, payload) => {
+      try {
+        return await homebridge.request(path, payload);
+      } catch (error) {
+        homebridge.toast.error(errorText(error), 'Agent ATV');
+        throw error;
+      }
+    };
+
+    const cell = (text, className) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      if (className) td.className = className;
+      return td;
+    };
+
+    const button = (label, className, ariaLabel, onClick) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `btn btn-sm ${className}`;
+      b.textContent = label;
+      b.setAttribute('aria-label', ariaLabel);
+      b.addEventListener('click', onClick);
+      return b;
+    };
+
+    const renderDevices = (devices) => {
+      const rows = $('device-rows');
+      rows.replaceChildren();
+      if (devices.length === 0) {
+        const tr = document.createElement('tr');
+        tr.append(cell('No Apple TV found yet. Scan the network, or add one under Discovery and devices below.', 'text-muted'));
+        tr.firstChild.colSpan = 6;
+        rows.append(tr);
+        return;
+      }
+      for (const device of devices) {
+        const tr = document.createElement('tr');
+        const paired = device.needsPairing ? 'pair again' : device.paired ? 'yes' : 'no';
+        tr.append(
+          cell(device.name),
+          cell(device.id, 'device-id'),
+          cell(device.connection),
+          cell(paired),
+          cell(SCREEN_LABELS[device.screen] ?? device.screen ?? 'off'),
+        );
+        const actions = document.createElement('td');
+        actions.className = 'text-end text-nowrap';
+        actions.append(
+          button(device.paired && !device.needsPairing ? 'Re-pair' : 'Pair', 'btn-primary', `Pair ${device.name}`, () =>
+            startPairing(device),
+          ),
+        );
+        if (device.paired && device.screen === 'unpaired') {
+          actions.append(
+            button('Pair screen reading', 'btn-outline-primary ms-1', `Pair screen reading on ${device.name}`, () =>
+              startPairing(device, 'remotepairing'),
+            ),
+          );
+        }
+        if (device.paired) {
+          const unpair = button('Unpair', 'btn-outline-danger ms-1', `Unpair ${device.name}`, () => {
+            if (armedUnpair !== device.id) {
+              armedUnpair = device.id;
+              unpair.textContent = 'Confirm unpair';
+              return;
+            }
+            armedUnpair = null;
+            void doUnpair(device);
+          });
+          actions.append(unpair);
+        }
+        tr.append(actions);
+        rows.append(tr);
+      }
+    };
+
+    const refresh = async () => {
+      try {
+        const [info, list] = await Promise.all([homebridge.request('/info'), homebridge.request('/devices')]);
+        const bridge = info.bridge;
+        $('bridge-status').textContent =
+          bridge.status === 'ready' ? `Bridge ready (${bridge.backend})` : `Bridge ${bridge.status}${bridge.error ? `: ${bridge.error}` : ''}`;
+        $('screen-option').hidden = info.screen?.enabled !== false;
+        renderDevices(list.devices);
+      } catch (error) {
+        $('bridge-status').textContent = errorText(error);
+        $('device-rows').replaceChildren();
+      }
+    };
+
+    const showStep = (step) => {
+      pairing = { pairingId: step.pairingId, name: step.device?.name ?? pairing?.name };
+      $('pairing').hidden = false;
+      $('pin-form').hidden = false;
+      $('pairing-message').textContent = `${step.message} (step ${step.step}/${step.steps}, ${step.protocol}).`;
+      $('pin').value = '';
+      $('pin').focus();
+    };
+
+    const showProgress = (message) => {
+      $('pairing').hidden = false;
+      $('pin-form').hidden = true;
+      $('pairing-message').textContent = message;
+    };
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const saveScreenEnabled = async () => {
+      try {
+        const blocks = await homebridge.getPluginConfig();
+        let block = blocks.find((b) => b.platform === 'AgentATV');
+        if (!block) {
+          block = { platform: 'AgentATV', name: 'Agent ATV' };
+          blocks.push(block);
+        }
+        block.screen = { ...block.screen, enabled: true };
+        await homebridge.updatePluginConfig(blocks);
+        await homebridge.savePluginConfig();
+      } catch (error) {
+        homebridge.toast.error(
+          `Could not save the Screen reading setting (${errorText(error)}). Turn it on in the settings below, then save.`,
+          'Agent ATV',
+        );
+        throw error;
+      }
+    };
+
+    /** Saves screen.enabled, turns it on in the running plugin, then waits for its install. */
+    const enableScreen = async () => {
+      await saveScreenEnabled();
+      let { screen } = await call('/screen');
+      showProgress('Installing screen reading (about 2 minutes the first time)…');
+      const giveUpAt = Date.now() + 10 * 60_000;
+      while (screen.status === 'installing' && Date.now() < giveUpAt) {
+        await sleep(3000);
+        ({ screen } = await call('/info'));
+      }
+      if (screen.status !== 'ready') {
+        homebridge.toast.error(
+          `Screen reading could not be installed: ${screen.reason ?? screen.status}. Fix the error shown in the Homebridge log, restart Homebridge, then use Pair screen reading.`,
+          'Agent ATV',
+        );
+      }
+    };
+
+    const endPairing = () => {
+      pairing = null;
+      $('pairing').hidden = true;
+    };
+
+    const startPairing = async (device, protocol) => {
+      if (pairing) await homebridge.request('/cancel', { pairingId: pairing.pairingId }).catch(() => undefined);
+      if (!protocol && !$('screen-option').hidden && $('with-screen').checked) {
+        try {
+          await enableScreen();
+        } catch {
+          // already reported; pair without screen reading
+        }
+        $('screen-option').hidden = true;
+      }
+      homebridge.showSpinner();
+      try {
+        showStep(await call('/pair', protocol ? { device: device.id, protocol } : { device: device.id }));
+      } catch {
+        endPairing();
+      } finally {
+        homebridge.hideSpinner();
+      }
+    };
+
+    const doUnpair = async (device) => {
+      homebridge.showSpinner();
+      try {
+        await call('/unpair', { device: device.id });
+        homebridge.toast.success(`${device.name} unpaired`, 'Agent ATV');
+      } catch {
+        // already reported
+      } finally {
+        homebridge.hideSpinner();
+        await refresh();
+      }
+    };
+
+    $('pin-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const pin = $('pin').value.trim();
+      if (!/^\d{4,8}$/.test(pin)) {
+        homebridge.toast.warning('Type the digits shown on the TV.', 'Agent ATV');
+        return;
+      }
+      if (!pairing) return;
+      homebridge.showSpinner();
+      try {
+        const result = await call('/pin', { pairingId: pairing.pairingId, pin });
+        if (result.status === 'next') {
+          showStep(result);
+        } else {
+          endPairing();
+          homebridge.toast.success(`${result.device.name} paired (${result.device.connection})`, 'Agent ATV');
+          if (result.warning) homebridge.toast.warning(result.warning, 'Agent ATV');
+          await refresh();
+        }
+      } catch (error) {
+        if (error?.error?.code !== 'BAD_REQUEST') endPairing();
+      } finally {
+        homebridge.hideSpinner();
+      }
+    });
+
+    $('cancel-pairing').addEventListener('click', async () => {
+      if (pairing) await homebridge.request('/cancel', { pairingId: pairing.pairingId }).catch(() => undefined);
+      endPairing();
+    });
+
+    $('scan').addEventListener('click', async () => {
+      homebridge.showSpinner();
+      try {
+        const result = await call('/scan', { timeoutMs: 5000 });
+        homebridge.toast.info(`Found ${result.devices.length} Apple TV(s)`, 'Agent ATV');
+      } catch {
+        // already reported
+      } finally {
+        homebridge.hideSpinner();
+        await refresh();
+      }
+    });
+
+    $('refresh').addEventListener('click', () => void refresh());
+
+    $('show-token').addEventListener('click', () => {
+      const input = $('token');
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      $('show-token').textContent = show ? 'Hide' : 'Show';
+      $('show-token').setAttribute('aria-pressed', String(show));
+    });
+
+    $('copy-token').addEventListener('click', async () => {
+      const value = $('token').value;
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        const input = $('token');
+        const type = input.type;
+        input.type = 'text';
+        input.select();
+        document.execCommand('copy');
+        input.type = type;
+      }
+      homebridge.toast.success('Token copied', 'Agent ATV');
+    });
+
+    const loadToken = async () => {
+      try {
+        const { token, port, bind } = await homebridge.request('/token');
+        $('token').value = token;
+        const host = bind === '0.0.0.0' || bind === '::' ? window.location.hostname || '<homebridge-host>' : bind;
+        $('cli-snippet').textContent = `agent-atv config set url http://${host}:${port}\nagent-atv config set token -`;
+      } catch (error) {
+        $('cli-snippet').textContent = errorText(error);
+      }
+    };
+
+    void refresh();
+    void loadToken();
+    homebridge.showSchemaForm();
+  })();
+</script>

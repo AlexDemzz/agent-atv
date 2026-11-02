@@ -1,0 +1,215 @@
+{
+  "pluginAlias": "AgentATV",
+  "pluginType": "platform",
+  "singular": true,
+  "customUi": true,
+  "headerDisplay": "Lets AI agents drive your Apple TV through the `agent-atv` CLI. Pair your Apple TV above, then copy the API token into the CLI with `agent-atv config set token -`.",
+  "footerDisplay": "Turn on Screen reading to let agents see the focused element and take screenshots; pairing then asks for one more PIN.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Agent ATV",
+        "required": true
+      },
+      "api": {
+        "title": "HTTP API",
+        "type": "object",
+        "properties": {
+          "port": {
+            "title": "Port",
+            "type": "integer",
+            "default": 8787,
+            "minimum": 1024,
+            "maximum": 65535
+          },
+          "bind": {
+            "title": "Bind address",
+            "description": "0.0.0.0 listens on every interface. Prefer the Tailscale IP of this host when the agent connects over Tailscale.",
+            "type": "string",
+            "default": "0.0.0.0"
+          },
+          "token": {
+            "title": "API token override",
+            "description": "Leave empty to use the generated token (shown in the panel above). At least 32 characters.",
+            "type": "string",
+            "default": "",
+            "pattern": "^(.{32,})?$"
+          }
+        }
+      },
+      "discovery": {
+        "title": "Discovery",
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "title": "Discover Apple TVs automatically",
+            "type": "boolean",
+            "default": true
+          },
+          "hosts": {
+            "title": "Unicast scan hosts",
+            "description": "IP addresses to scan directly, for Apple TVs that multicast discovery can't reach.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "devices": {
+        "title": "Devices",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "title": "Device id",
+              "description": "MAC address without separators (as listed by agent-atv devices) or any pyatv identifier.",
+              "type": "string",
+              "required": true
+            },
+            "name": {
+              "title": "Display name",
+              "type": "string"
+            },
+            "address": {
+              "title": "IP address",
+              "type": "string"
+            },
+            "homekit": {
+              "title": "Expose to HomeKit",
+              "type": "boolean",
+              "default": true
+            }
+          }
+        }
+      },
+      "homekit": {
+        "title": "HomeKit",
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "title": "Publish a HomeKit TV accessory per paired Apple TV",
+            "type": "boolean",
+            "default": true
+          },
+          "inputs": {
+            "title": "Inputs (bundle ids)",
+            "description": "Apps exposed as TV inputs. Empty: the first apps by name.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maxInputs": {
+            "title": "Maximum inputs",
+            "type": "integer",
+            "default": 12,
+            "minimum": 1,
+            "maximum": 40
+          }
+        }
+      },
+      "screen": {
+        "title": "Screen reading",
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "title": "Read the screen (foreground app, focused element and screenshots)",
+            "description": "Installs pymobiledevice3 (about 350 MB, a few minutes) in the plugin folder and runs one helper process per Apple TV. Pairing then asks for one more PIN. No root and no other setup needed.",
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "python": {
+        "title": "Python",
+        "type": "object",
+        "properties": {
+          "executable": {
+            "title": "Python executable",
+            "description": "Python 3.10 to 3.13, used to create the plugin's virtual environment.",
+            "type": "string",
+            "default": "python3"
+          },
+          "forceVenvRecreate": {
+            "title": "Recreate the virtual environment on next start",
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "debug": {
+        "title": "Debug logging",
+        "type": "boolean",
+        "default": false
+      }
+    }
+  },
+  "layout": [
+    "name",
+    {
+      "type": "fieldset",
+      "title": "HTTP API",
+      "expandable": true,
+      "expanded": false,
+      "items": ["api.port", "api.bind", "api.token"]
+    },
+    {
+      "type": "fieldset",
+      "title": "Discovery and devices",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        "discovery.enabled",
+        {
+          "key": "discovery.hosts",
+          "type": "array",
+          "items": ["discovery.hosts[]"]
+        },
+        {
+          "key": "devices",
+          "type": "array",
+          "items": [
+            "devices[].id",
+            "devices[].name",
+            "devices[].address",
+            "devices[].homekit"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "HomeKit",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        "homekit.enabled",
+        {
+          "key": "homekit.inputs",
+          "type": "array",
+          "items": ["homekit.inputs[]"]
+        },
+        "homekit.maxInputs"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Screen reading",
+      "expandable": true,
+      "expanded": false,
+      "items": ["screen.enabled"]
+    },
+    {
+      "type": "fieldset",
+      "title": "Advanced",
+      "expandable": true,
+      "expanded": false,
+      "items": ["python.executable", "python.forceVenvRecreate", "debug"]
+    }
+  ]
+}

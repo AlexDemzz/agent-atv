@@ -1,0 +1,34 @@
+{
+  "name": "agent-atv-monorepo",
+  "private": true,
+  "description": "Apple TV control for AI agents: a CLI plus the Homebridge plugin it talks to",
+  "license": "MIT",
+  "author": "AlexDemzz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexDemzz/agent-atv.git"
+  },
+  "workspaces": [
+    "packages/homebridge-agent-atv",
+    "packages/agent-atv"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:python": "python3 -m unittest discover -s packages/homebridge-agent-atv/python/tests -t packages/homebridge-agent-atv/python",
+    "test:e2e": "npm run build && AGENT_ATV_E2E=1 npm run test:e2e --workspace agent-atv"
+  },
+  "engines": {
+    "node": "^22.12.0 || ^24.0.0 || ^26.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "eslint": "^10.14.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
+  }
+}
