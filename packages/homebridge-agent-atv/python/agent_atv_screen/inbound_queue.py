@@ -1,10 +1,9 @@
 """Queues the userspace tunnel's inbound packets instead of dropping them (DESIGN.md §6.1 Tunnel).
 
-pymobiledevice3 11.49.1 asks for 6 MiB socketpair buffers, but without root Linux caps them at
-net.core.wmem_max (212992 on a Pi), about 26 packets of 16 KB. UserspaceTun.write drops whatever
-does not fit, and a screenshot burst then costs about 40 drops, hundreds of retransmitted segments
-and RTO stalls: 9 s instead of 3.5 s for a home-screen PNG. This replaces write() with one that
-queues what does not fit and sends it, in order, once the socket is writable again.
+Without root, Linux caps the tunnel's socketpair buffer far below a screenshot burst, and
+UserspaceTun.write drops whatever does not fit, which stalls the capture on retransmissions. This
+replaces write() with one that queues what does not fit and sends it, in order, once the socket is
+writable again.
 """
 
 from __future__ import annotations
@@ -13,13 +12,14 @@ import asyncio
 import collections
 import errno
 import logging
-from typing import Any, Deque
+from typing import Any, Deque, Optional
 
 _LOGGER = logging.getLogger("agent_atv_screen.pmd3")
 
-# 8 MiB of 16 KB packets; a capture queued at most 89 of them on a Pi. Past it TCP recovers the drops.
+# Bounds the memory a stalled stack can pin; past it TCP recovers the drops.
 MAX_QUEUED = 512
 _QUEUE = "_agent_atv_queue"
+_DROPPING = "_agent_atv_dropping"
 _FULL = (errno.EAGAIN, errno.EWOULDBLOCK, errno.ENOBUFS)
 
 
@@ -36,6 +36,7 @@ def install(userspace_tunnel: Any) -> None:
 
     async def close(self: Any) -> None:
         # The socketpair closes under the writer otherwise, and its descriptor gets reused.
+        # The stock close() sets _closed before it awaits, so no write() can queue again.
         _discard(self)
         await stock_close(self)
 
@@ -45,12 +46,12 @@ def install(userspace_tunnel: Any) -> None:
 
 
 def _send(tun: Any, frame: bytes) -> None:
-    queue: Deque[bytes] = getattr(tun, _QUEUE, None) or collections.deque()
+    queue: Optional[Deque[bytes]] = getattr(tun, _QUEUE, None)
     if queue:
         if len(queue) < MAX_QUEUED:
             queue.append(frame)
-        elif not getattr(tun, "_agent_atv_dropped", False):
-            tun._agent_atv_dropped = True
+        elif not getattr(tun, _DROPPING, False):
+            setattr(tun, _DROPPING, True)
             _LOGGER.debug("The tunnel's inbound queue is full (%d packets); dropping until it drains", MAX_QUEUED)
         return
     try:
@@ -60,8 +61,9 @@ def _send(tun: Any, frame: bytes) -> None:
         if exc.errno not in _FULL:
             _failed(tun, exc)
             return
-    queue.append(frame)
-    setattr(tun, _QUEUE, queue)
+    if tun._closed:
+        return
+    setattr(tun, _QUEUE, collections.deque((frame,)))
     asyncio.get_running_loop().add_writer(tun._peer.fileno(), _flush, tun)
 
 
@@ -74,24 +76,21 @@ def _flush(tun: Any) -> None:
             if exc.errno in _FULL:
                 return
             _failed(tun, exc)
-            _discard(tun)
-            return
         queue.popleft()
     _discard(tun)
 
 
 def _failed(tun: Any, exc: OSError) -> None:
-    # Like the stock write(): any other error (e.g. EMSGSIZE) recurs on every retransmission.
+    # Like the stock write(): any other error (e.g. EMSGSIZE) drops the packet, logged once per tunnel.
     if not tun._send_error_logged:
         tun._send_error_logged = True
-        _LOGGER.warning("The userspace tunnel dropped a packet from the Apple TV: %s", exc)
+        _LOGGER.debug("The userspace tunnel dropped a packet from the Apple TV: %s", exc)
 
 
 def _discard(tun: Any) -> None:
-    queue = getattr(tun, _QUEUE, None)
-    if queue is None:
+    if getattr(tun, _QUEUE, None) is None:
         return
     setattr(tun, _QUEUE, None)
-    tun._agent_atv_dropped = False
+    setattr(tun, _DROPPING, False)
     if tun._peer.fileno() >= 0:
         asyncio.get_running_loop().remove_writer(tun._peer.fileno())

@@ -10,6 +10,7 @@ import dataclasses
 import hashlib
 import importlib
 import inspect
+import socket
 import unittest
 
 from tests import fake_pmd3 as fake
@@ -101,22 +102,28 @@ class Pmd3SurfaceTest(unittest.TestCase):
         self.assertTrue(inspect.isasyncgenfunction(AccessibilityAudit.iter_events))
         self.assertTrue(inspect.isasyncgenfunction(fake.AccessibilityAudit.iter_events))
 
-    def test_the_tunnel_write_the_worker_replaces_is_the_one_it_reimplements(self) -> None:
+    def test_the_tunnel_write_and_close_the_worker_replaces_are_the_ones_it_relies_on(self) -> None:
         from pymobiledevice3.remote.userspace_tunnel import UserspaceTun
 
-        # agent_atv_screen.inbound_queue rewrites this function with a queue in place of the drop.
-        # Another pymobiledevice3 version may handle inbound packets differently: compare it with
-        # write() and the queue, then update both and this digest.
-        source = inspect.getsource(UserspaceTun.write)
-        self.assertEqual(
-            hashlib.sha256(source.encode()).hexdigest(),
-            "631d0efa351d33851ef53831307d98d84c3bee6014e11a310bdb5ffab5bd867a",
-            "UserspaceTun.write changed: review agent_atv_screen/inbound_queue.py against it",
-        )
+        # agent_atv_screen.inbound_queue rewrites write() with a queue in place of the drop, and
+        # relies on close() setting _closed before it awaits stack.stop() and then closing the
+        # socketpair. Another pymobiledevice3 version may differ: compare both with the queue, then
+        # update it and these digests.
+        for method, digest in (
+            (UserspaceTun.write, "631d0efa351d33851ef53831307d98d84c3bee6014e11a310bdb5ffab5bd867a"),
+            (UserspaceTun.close, "ae63cf7bd4971b761b65e6a0a39f7d83438ad83803c8c8d073cf37dafa625c2c"),
+        ):
+            self.assertEqual(
+                hashlib.sha256(inspect.getsource(method).encode()).hexdigest(),
+                digest,
+                f"UserspaceTun.{method.__name__} changed: review agent_atv_screen/inbound_queue.py against it",
+            )
         tun = UserspaceTun()
         try:
+            self.assertEqual(tun._peer.type, socket.SOCK_DGRAM)
             self.assertFalse(tun._peer.getblocking())
             self.assertFalse(tun._send_error_logged)
+            self.assertFalse(tun._closed)
         finally:
             tun._peer.close()
             tun._pend.close()

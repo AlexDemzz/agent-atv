@@ -167,6 +167,7 @@ class UserspaceTun:
         if self._closed:
             return
         self._closed = True
+        await asyncio.sleep(0)  # stack.stop(), before the socketpair closes
         for s in (self._peer, self._pend):
             s.close()
 

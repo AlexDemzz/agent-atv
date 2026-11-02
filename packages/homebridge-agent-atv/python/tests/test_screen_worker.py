@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import zlib
 
+from agent_atv_screen import inbound_queue
 from agent_atv_screen.backend_pmd3 import Pmd3Backend, Timings
 from agent_atv_screen.server import serve
 from tests import fake_pmd3
@@ -38,6 +39,12 @@ def decodable_png(width: int, height: int) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
+def restore_userspace_tun(test: unittest.TestCase) -> None:
+    """inbound_queue.install() patches the class for the whole process; give it back as it was."""
+    stock = {name: vars(fake_pmd3.UserspaceTun)[name] for name in ("write", "close")}
+    test.addCleanup(lambda: [setattr(fake_pmd3.UserspaceTun, name, value) for name, value in stock.items()])
+
+
 class ScreenWorkerTestCase(unittest.IsolatedAsyncioTestCase):
     identifier = RECORD
     records = [RECORD]
@@ -45,6 +52,7 @@ class ScreenWorkerTestCase(unittest.IsolatedAsyncioTestCase):
     timings = FAST
 
     async def asyncSetUp(self) -> None:
+        restore_userspace_tun(self)
         self.pmd3 = fake_pmd3.FakePmd3()
         self.pmd3.records = list(self.records)
         self.pmd3.record_addresses = dict(self.record_addresses)
@@ -496,50 +504,88 @@ class LostSessionTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
 
-class InboundPacketsTest(ScreenWorkerTestCase):
+def packet(index: int, size: int = 1000) -> bytes:
+    return fake_pmd3.LOOPBACK_HEADER + index.to_bytes(4, "big") + bytes(size - 4)
+
+
+async def received(tun: fake_pmd3.UserspaceTun, expected: int) -> list:
+    """The packet indexes that reach the stack's end, in arrival order."""
+    indexes = []
+    loop = asyncio.get_running_loop()
+    quiet_until = loop.time() + 0.2
+    while len(indexes) < expected and loop.time() < quiet_until:
+        try:
+            frame = tun._pend.recv(65535)
+        except (BlockingIOError, InterruptedError):
+            await asyncio.sleep(0.001)
+            continue
+        quiet_until = loop.time() + 0.2
+        assert frame[:14] == fake_pmd3._ETH_HDR_TO_STACK
+        indexes.append(int.from_bytes(frame[14:18], "big"))
+    return indexes
+
+
+class InboundPacketsTest(unittest.IsolatedAsyncioTestCase):
     """The Apple TV sends a capture in bursts larger than the tunnel's capped socketpair buffer."""
 
     async def asyncSetUp(self) -> None:
-        await super().asyncSetUp()
-        await self.connected()
+        restore_userspace_tun(self)
+        inbound_queue.install(fake_pmd3)
         self.tun = fake_pmd3.UserspaceTun()
         self.addAsyncCleanup(self.tun.close)
 
-    def packet(self, index: int) -> bytes:
-        return fake_pmd3.LOOPBACK_HEADER + index.to_bytes(4, "big") + bytes(996)
-
-    async def received(self, expected: int) -> list:
-        """The packet indexes that reach the stack's end, in arrival order."""
-        indexes = []
-        loop = asyncio.get_running_loop()
-        quiet_until = loop.time() + 0.2
-        while len(indexes) < expected and loop.time() < quiet_until:
-            try:
-                frame = self.tun._pend.recv(65535)
-            except (BlockingIOError, InterruptedError):
-                await asyncio.sleep(0.001)
-                continue
-            quiet_until = loop.time() + 0.2
-            self.assertEqual(frame[:14], fake_pmd3._ETH_HDR_TO_STACK)
-            indexes.append(int.from_bytes(frame[14:18], "big"))
-        return indexes
-
     async def test_queues_the_packets_a_full_tunnel_buffer_would_drop_and_delivers_them_in_order(self) -> None:
         for index in range(200):
-            self.tun.write(self.packet(index))
+            self.tun.write(packet(index))
 
-        self.assertEqual(await self.received(200), list(range(200)))
+        self.assertEqual(await received(self.tun, 200), list(range(200)))
 
     async def test_a_queue_at_its_bound_drops_the_newest_packets_and_keeps_the_order_of_the_rest(self) -> None:
         sent = 2000
         for index in range(sent):
-            self.tun.write(self.packet(index))
+            self.tun.write(packet(index))
 
-        indexes = await self.received(sent)
+        indexes = await received(self.tun, sent)
 
         self.assertGreater(len(indexes), 512)
         self.assertLess(len(indexes), sent)
         self.assertEqual(indexes, list(range(len(indexes))))
+
+    async def test_a_queued_packet_the_socket_refuses_is_dropped_alone(self) -> None:
+        for index in range(100):
+            self.tun.write(packet(index))
+        # Larger than the socket buffer (doubled by Linux): EMSGSIZE when its turn comes.
+        self.tun.write(packet(9999, size=60000))
+        for index in range(100, 200):
+            self.tun.write(packet(index))
+
+        self.assertEqual(await received(self.tun, 200), list(range(200)))
+
+    async def test_packets_arriving_while_the_tunnel_closes_leave_no_writer_on_its_socket(self) -> None:
+        for index in range(200):
+            self.tun.write(packet(index))
+        fd = self.tun._peer.fileno()
+        closing = asyncio.ensure_future(self.tun.close())
+        while not self.tun._closed:
+            await asyncio.sleep(0)
+        for index in range(200, 400):
+            self.tun.write(packet(index))
+
+        await closing
+
+        self.assertFalse(asyncio.get_running_loop().remove_writer(fd))
+
+
+class InboundQueueInstallTest(ScreenWorkerTestCase):
+    async def test_the_worker_queues_the_tunnel_packets_once_started(self) -> None:
+        await self.connected()
+        tun = fake_pmd3.UserspaceTun()
+        self.addAsyncCleanup(tun.close)
+
+        for index in range(200):
+            tun.write(packet(index))
+
+        self.assertEqual(await received(tun, 200), list(range(200)))
 
 
 class ScreenshotTest(ScreenWorkerTestCase):
