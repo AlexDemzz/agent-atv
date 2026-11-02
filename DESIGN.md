@@ -1258,8 +1258,7 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   against tvOS 27.2: a full home-screen PNG (20 to 29 MB) takes 4.1 to 5.5 s (8.0 to 15.3 s in 0.1.1,
   before the inbound queue) and its 1280-wide JPEG 4.1 to 6.6 s; a static Settings PNG 3.4 to 4.1 s
   (8.2 to 9.7 s in 0.1.1) and its JPEG 4.2 to 4.6 s. The JPEG shrinks only the HTTP answer, not the
-  capture. The research note `apple-tv-screenshot-speed.md` holds the raw device numbers (render time
-  before the first byte, tunnel throughput, drops and retransmissions).
+  capture.
 - **Pairing**: `bonjour.browse_remotepairing_manual_pairing()` (advertised while the Apple TV shows
   *Settings > Remotes and Devices > Remote App and Devices*, the screen of the pyatv PINs), the answer
   whose addresses include the device address (else the only answer; its IPv4 address preferred), then
