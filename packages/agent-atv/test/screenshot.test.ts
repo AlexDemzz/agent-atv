@@ -201,6 +201,26 @@ describe('snapshot --screenshot', () => {
     expect(result.stdout).toMatch(/Screenshot: .*screenshot-A1B2C3D4E5F6-\d{8}-\d{6}\.png \(3840x2160\)\n$/);
   });
 
+  it('asks for a scaled-down JPEG with --max-width and --jpeg and names the default file .jpg', async () => {
+    api.on('POST', `${DEVICE}/screenshot`, { ...pngReply(), headers: { ...pngReply().headers, 'content-type': 'image/jpeg' } });
+
+    const result = await sandbox.run(['snapshot', '--screenshot', '--max-width', '1280', '--jpeg']);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/Screenshot: .*screenshot-A1B2C3D4E5F6-\d{8}-\d{6}\.jpg \(3840x2160\)\n$/);
+    expect(screenshotBodies()).toEqual([{ maxWidth: 1280, format: 'jpeg' }]);
+  });
+
+  it('rejects a --max-width out of range before reading the state', async () => {
+    const result = await sandbox.run(['snapshot', '--screenshot', '--max-width', '50']);
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toBe(
+      'error: --max-width must be between 160 and 3840, got 50 (USAGE)\nhint: e.g. agent-atv snapshot --screenshot --max-width 1280 --jpeg\n',
+    );
+    expect(api.requests).toEqual([]);
+  });
+
   it('still succeeds when the screenshot fails', async () => {
     api.on('POST', `${DEVICE}/screenshot`, {
       status: 503,

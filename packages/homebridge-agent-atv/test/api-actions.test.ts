@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { APPS, DEVICE_ID, installAppleTv, type AppleTvOptions } from './support/apple-tv';
 import { BridgeFailure, FakeBridge } from './support/fake-bridge';
 import { makeStorage, seedPairedDevice, startPlugin, stopAll, waitConnected } from './support/harness';
@@ -158,17 +158,25 @@ describe('keyboard, power, volume, seek (P1)', () => {
 
   it('waits beyond the 15 s action timeout for the Apple TV to confirm a power change', async () => {
     const { plugin, bridge } = await connectedPlugin();
-    bridge.handle('power.set', () => new Promise((resolve) => setTimeout(() => resolve({ power: 'on' }), 16_000)));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      bridge.handle('power.set', () => new Promise((resolve) => setTimeout(() => resolve({ power: 'on' }), 40_000)));
 
-    const response = await plugin.post(`${base}/power`, { on: true });
+      const pending = plugin.post(`${base}/power`, { on: true });
+      await vi.waitFor(() => expect(bridge.calls('power.set')).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(40_000);
+      const response = await pending;
 
-    expect(response.body).toMatchObject({ ok: true, power: 'on', state: { power: 'on' } });
-  }, 25_000);
+      expect(response.body).toMatchObject({ ok: true, power: 'on', state: { power: 'on' } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it.each([
-    [true, 'Run agent-atv power on again, then check with: agent-atv wait --power on'],
-    [false, 'Run agent-atv power off again, then check with: agent-atv wait --power off'],
-  ])('answers an unconfirmed power change (on: %s) with 504 and the commands to retry', async (on, hint) => {
+    [true, 'Run agent-atv power on again'],
+    [false, 'Run agent-atv power off again'],
+  ])('answers an unconfirmed power change (on: %s) with 504 and the command to retry', async (on, hint) => {
     const { plugin, bridge } = await connectedPlugin();
     const requested = on ? 'on' : 'off';
     const current = on ? 'off' : 'on';

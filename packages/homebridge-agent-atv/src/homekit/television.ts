@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type { API, Categories, CharacteristicValue, PlatformAccessory, Service } from 'homebridge';
+import { toApiError } from '../api/errors';
 import type { App } from '../bridge/protocol';
 import type { AgentAtvConfig } from '../config';
 import type { Device, DeviceManager } from '../devices/manager';
@@ -87,16 +88,17 @@ export class TelevisionAccessories {
     television
       .getCharacteristic(C.Active)
       .onGet(() => (device.state.power === 'on' ? C.Active.ACTIVE : C.Active.INACTIVE))
-      .onSet(async (value) => {
-        const on = value === C.Active.ACTIVE;
+      .onSet((value) => {
+        this.requireConnected(device);
         // HomeKit gives up on a write after 10 s and the Apple TV takes up to 20 s to confirm, so the
         // write answers once sent and Active follows the state events.
-        await this.act(device, async () => {
-          devices
-            .call<{ power: 'on' | 'off' | 'unknown' }>(device, 'power.set', { on })
-            .then(({ power }) => devices.patchState(device, { power }))
-            .catch((error: unknown) => log.warn(`${devices.displayName(device)}: HomeKit power command failed: ${errorMessage(error)}`));
-        });
+        devices
+          .call<{ power: 'on' | 'off' | 'unknown' }>(device, 'power.set', { on: value === C.Active.ACTIVE })
+          .then(({ power }) => devices.patchState(device, { power }))
+          .catch((error: unknown) => {
+            const failure = toApiError(error, devices.displayName(device));
+            log.warn(`${devices.displayName(device)}: HomeKit power command failed: ${failure.message}; ${failure.hint}`);
+          });
       });
     television
       .getCharacteristic(C.ActiveIdentifier)
@@ -163,14 +165,26 @@ export class TelevisionAccessories {
   }
 
   private async act(device: Device, action: () => Promise<unknown>): Promise<void> {
-    const { api, devices, log } = this.options;
+    this.requireConnected(device);
     try {
-      devices.requireConnected(device);
       await action();
     } catch (error) {
-      log.warn(`${devices.displayName(device)}: HomeKit command failed: ${errorMessage(error)}`);
-      throw new api.hap.HapStatusError(api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+      throw this.failed(device, error);
     }
+  }
+
+  private requireConnected(device: Device): void {
+    try {
+      this.options.devices.requireConnected(device);
+    } catch (error) {
+      throw this.failed(device, error);
+    }
+  }
+
+  private failed(device: Device, error: unknown): Error {
+    const { api, devices, log } = this.options;
+    log.warn(`${devices.displayName(device)}: HomeKit command failed: ${errorMessage(error)}`);
+    return new api.hap.HapStatusError(api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
   }
 
   private async logSetupCode(name: string): Promise<void> {

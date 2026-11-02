@@ -81,7 +81,7 @@ agent-atv/
     │   │   ├── wait/conditions.ts    pure condition evaluator (§3.6)
     │   │   ├── wait/waiter.ts        event-driven waiter with timeout
     │   │   ├── screen/service.ts     screen workers, focus reports, screenshots (§6)
-    │   │   ├── screen/png.ts         PNG IHDR and JPEG SOF width/height parsers
+    │   │   ├── screen/image-size.ts  PNG IHDR and JPEG SOF width/height parsers
     │   │   └── homekit/television.ts Television accessory (§5.5)
     │   ├── test/                     vitest *.test.ts, test/support/* helpers, test/fixtures/*
     │   ├── homebridge-ui/
@@ -106,7 +106,7 @@ agent-atv/
     │       │   ├── server.py         serve(backend, reader, writer), the §6.2 protocol
     │       │   ├── backend_pmd3.py   Pmd3Backend(pmd3): the only code that touches pymobiledevice3
     │       │   ├── pmd3.py           load(): the pymobiledevice3 modules Pmd3Backend works through
-│       │   ├── image.py          screenshot maxWidth/format: Pillow, imported only when needed
+    │       │   ├── image.py          screenshot maxWidth/format: Pillow, imported only when needed
     │       │   └── backend_fake.py   in-memory fake screen (§6.4)
     │       └── tests/                unittest test_*.py + fake_pyatv.py + fake_pmd3.py; neither library needed
     └── agent-atv/
@@ -217,7 +217,9 @@ its way) makes the session stale: the bridge logs a warning with the reason and 
 `reason: "stale_session"`, and the plugin reconnects (§5.1). No check starts while a `power.set` runs,
 and one that a `power.set` overtook is ignored. An error the Apple TV answered with (pyatv's
 `ProtocolError` without a cause, e.g. `No request handler`) logs one warning and ends the checks for that
-connection; `power.set` still works without them.
+connection; `power.set` still works without them. The private path is resolved once at connect: when
+this pyatv lacks it, one warning and no checks for that connection. Any other error during a check
+(e.g. an `AttributeError` from inside pyatv) is a failed request: the session is stale.
 
 When keyboard focus becomes `focused`, and after each `keyboard.*` call, the bridge refreshes
 `keyboard.text` with `text_get()`. When focus is not `focused`, `text` is `null`.
@@ -483,7 +485,7 @@ is one (`run agent-atv pair A1B2C3D4E5F6 --screen`). An agent must be able to ac
 | `SCREEN_NOT_PAIRED` | 503 | no RemotePairing record for the device; hint `run agent-atv pair <id> --screen` |
 | `SCREEN_UNAVAILABLE` | 503 | screen venv still installing, worker restarting, or no tunnel to the Apple TV; `details.tunnel?` |
 | `DEVICE_TIMEOUT` | 504 | |
-| `POWER_NOT_CONFIRMED` | 504 | hint `Run agent-atv power <requested> again, then check with: agent-atv wait --power <requested>` |
+| `POWER_NOT_CONFIRMED` | 504 | hint `Run agent-atv power <requested> again` |
 | `BRIDGE_TIMEOUT` | 504 | the plugin-side request timeout fired |
 
 Bridge codes pass through unchanged with the status from this table plus a `hint`.
@@ -719,9 +721,9 @@ Seq: 182
   ` in <nowPlaying.name>` if set. Null parts are omitted; `mediaType` is omitted when `unknown`.
 - `Keyboard: focused text="stran"` when focused. `Volume: n/a` when null.
   `needsPairing` adds a line `Pairing: required (run agent-atv pair)`.
-- `--screenshot [path]` also captures a screenshot and adds
-  `Screenshot: <path> (3840x2160)`. A screenshot failure doesn't fail the snapshot: it prints
-  `Screenshot: unavailable, <reason>: <hint>` and exits 0.
+- `--screenshot [path]` also captures a screenshot (`--max-width` and `--jpeg` as for `screenshot`,
+  checked before any request) and adds `Screenshot: <path> (3840x2160)`. A screenshot failure doesn't
+  fail the snapshot: it prints `Screenshot: unavailable, <reason>: <hint>` and exits 0.
 - `--json`: State with its `focus` FocusReport, plus `"screenshot": {"path", "sha256", "width", "height"} | {"error": {...}}` when requested.
 
 **state [field]**: one field, for cheap checks, from `GET state` (cached, no refresh). Fields:
@@ -751,10 +753,11 @@ $ agent-atv screenshot
 - `--max-width <px>` (160–3840) sends `maxWidth`, `--jpeg` sends `format: "jpeg"`: a 1280-wide JPEG
   is about 110 KB where the 4K PNG is MBs, for about 0.5 s more on a Pi. Out of range → `USAGE` with
   the range and the hint `e.g. agent-atv screenshot --max-width 1280 --jpeg`, before any request.
-- `--if-changed`: sends `ifNoneMatch` with the last sha256 from `<cache>/last-screenshot.json`
-  (keyed by device id, `{sha256, path}`), along with the options. On 304 prints `unchanged <previous path>`, exit 0. The cache
-  is updated after each 200. The sha256 is of the bytes returned, so only a capture taken with the
-  same `--max-width` and `--jpeg` as the cached one can come back 304.
+- `--if-changed`: sends `ifNoneMatch`, the last sha256 for that device from `<cache>/last-screenshot.json`
+  (`{sha256, path}` keyed by device id; the options are not stored), next to `maxWidth` and `format`. On
+  304 prints `unchanged <previous path>`, exit 0. The cache is updated after each 200. The sha256 is of
+  the bytes returned, so only a capture taken with the same `--max-width` and `--jpeg` as the cached one
+  can come back 304.
 - `--json`: `{"path", "sha256", "width", "height", "changed": true}` or `{"changed": false, "sha256", "path"}`.
 - The filename timestamp is UTC; characters of the device id outside `[A-Za-z0-9._-]` become `_`. The
   default directory is created mode 0700 and must be owned by the current user (else `WRITE_FAILED`).
@@ -1080,7 +1083,8 @@ Category `APPLE_TV`, UUID `hap.uuid.generate('agent-atv:' + id)`, created after 
 `connect`.
 - `Television`: `ConfiguredName` = device name, `SleepDiscoveryMode` ALWAYS_DISCOVERABLE, `Active` ↔
   power (`onSet` → `power.set`, answered once sent: HomeKit gives up on a write after 10 s and the
-  confirmation takes up to 20 s; a failure logs a warning and `Active` follows the state events),
+  confirmation takes up to 20 s; a failure logs a warning with the error's hint, e.g. `Run agent-atv
+  power on again`, and `Active` follows the state events),
   `ActiveIdentifier` ↔ the `nowPlaying` app's input index (`onSet` →
   `app.launch`; 0 when the app isn't an input). The foreground app is read on demand only (§6.3), so
   HomeKit follows the now-playing app, which stays on the last app that played, `RemoteKey`: ARROW_* → arrows, SELECT → `select`,

@@ -8,7 +8,7 @@ import type { App, Json } from '../bridge/protocol';
 import type { Device, DeviceManager } from '../devices/manager';
 import { ensureDir } from '../fs-util';
 import { errorMessage, type Logger } from '../logger';
-import { jpegSize, pngSize } from './png';
+import { jpegSize, pngSize } from './image-size';
 
 export interface FocusElement {
   label: string | null;

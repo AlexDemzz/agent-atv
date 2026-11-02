@@ -80,12 +80,15 @@ export function defaultScreenshotPath(deviceId: string, extension = 'png'): stri
 
 const MAX_WIDTH = { min: 160, max: 3840 };
 
-function captureOptions(ctx: Context): CaptureOptions {
+export const CAPTURE_FLAGS = [{ name: 'max-width', value: 'required' as const }, { name: 'jpeg' }];
+
+/** `example`: the command line the usage error suggests, e.g. `agent-atv screenshot --max-width 1280 --jpeg`. */
+export function captureOptions(ctx: Context, example: string): CaptureOptions {
   let maxWidth: number | undefined;
   try {
     maxWidth = integerFlag(ctx.args, 'max-width', MAX_WIDTH.min, MAX_WIDTH.max);
   } catch (error) {
-    throw usageError((error as Error).message, 'e.g. agent-atv screenshot --max-width 1280 --jpeg');
+    throw usageError((error as Error).message, `e.g. ${example}`);
   }
   return { ...(maxWidth === undefined ? {} : { maxWidth }), ...(booleanFlag(ctx.args, 'jpeg') ? { format: 'jpeg' as const } : {}) };
 }
@@ -107,17 +110,17 @@ export async function capture(
     return { changed: false, path: previous.path, sha256: previous.sha256 };
   }
 
-  const png = Buffer.from(await response.arrayBuffer());
+  const image = Buffer.from(await response.arrayBuffer());
   // From what came back: a plugin older than --jpeg answers a PNG.
   const extension = response.headers.get('content-type') === 'image/jpeg' ? 'jpg' : 'png';
   const path = resolve(target ?? defaultScreenshotPath(deviceId, extension));
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, png);
+    writeFileSync(path, image);
   } catch (error) {
     throw writeFailed(path, error);
   }
-  const sha256 = response.headers.get('x-agent-atv-sha256') ?? createHash('sha256').update(png).digest('hex');
+  const sha256 = response.headers.get('x-agent-atv-sha256') ?? createHash('sha256').update(image).digest('hex');
   writeCache(ctx, deviceId, { sha256, path });
   return {
     changed: true,
@@ -133,11 +136,11 @@ export const screenshot: Command = {
   name: 'screenshot',
   usage: 'screenshot [path] [--max-width <px>] [--jpeg] [--if-changed]',
   summary: 'observe: capture the TV screen as PNG (--max-width/--jpeg shrink it, --if-changed skips unchanged)',
-  flags: [{ name: 'if-changed' }, { name: 'max-width', value: 'required' }, { name: 'jpeg' }],
+  flags: [{ name: 'if-changed' }, ...CAPTURE_FLAGS],
   async run(ctx) {
     const [target, ...extra] = ctx.args.positionals;
     if (extra.length > 0) throw usageError('screenshot takes at most one path', 'e.g. agent-atv screenshot ./tv.png');
-    const options = captureOptions(ctx);
+    const options = captureOptions(ctx, 'agent-atv screenshot --max-width 1280 --jpeg');
     const { device } = await fetchState(ctx);
     const result = await capture(ctx, device.id, target, booleanFlag(ctx.args, 'if-changed'), options);
     if (!result.changed) {

@@ -209,7 +209,7 @@ agent-atv snapshot --json
 
 | command | does |
 | --- | --- |
-| `snapshot [--screenshot [path]]` | device, power, app, playback, keyboard, focused element, volume |
+| `snapshot [--screenshot [path] [--max-width <px>] [--jpeg]]` | device, power, app, playback, keyboard, focused element, volume |
 | `state [field]` | one field: `power app playing keyboard volume connection seq` from the cached state, or `focus` |
 | `screenshot [path] [--max-width <px>] [--jpeg] [--if-changed]` | PNG of the TV screen, or a smaller JPEG |
 | `press <key[:action][*n]...>` | remote keys; `back` and `home` are shortcuts |
