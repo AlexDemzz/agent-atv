@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import errno
+import socket
 import threading
 import types
 from pathlib import Path
@@ -18,7 +20,13 @@ from typing import Any, Dict, List, Optional
 from agent_atv_screen.backend_fake import fake_png
 
 IMITATES = {
-    "pymobiledevice3.remote.userspace_tunnel": ["UserspaceRsdTunnel", "_create_no_root_tunnel_provider"],
+    "pymobiledevice3.remote.userspace_tunnel": [
+        "UserspaceRsdTunnel",
+        "_create_no_root_tunnel_provider",
+        "UserspaceTun",
+        "LOOPBACK_HEADER",
+        "_ETH_HDR_TO_STACK",
+    ],
     "pymobiledevice3.remote.tunnel_service": [
         "create_core_device_tunnel_service_using_remotepairing",
         "get_remote_pairing_tunnel_services",
@@ -121,6 +129,46 @@ async def get_remote_pairing_tunnel_services(
 
 async def _create_no_root_tunnel_provider(serial: Optional[str], autopair: bool, remotepairing_fallback: bool = True):
     raise PyMobileDevice3Exception("Failed to connect to usbmuxd socket")
+
+
+# The values on macOS; LOOPBACK_HEADER is per OS.
+LOOPBACK_HEADER = b"\x00\x00\x00\x1e"
+_ETH_HDR_TO_STACK = b"\x02\x00\x00\x00\x00\x01\x02\x00\x00\x00\x00\x02\x86\xdd"
+# What an unprivileged process gets: Linux caps the 6 MiB pymobiledevice3 asks for at net.core.wmem_max.
+FAKE_TUN_BUFFER_BYTES = 16 * 1024
+
+
+class UserspaceTun:
+    """The userspace tunnel's interface: write() hands each inbound packet to the PyTCP stack
+    through a non-blocking datagram socketpair and, like the real one, drops it when the buffer is
+    full. The test reads the stack's end, `_pend`."""
+
+    def __init__(self, interface_name: str = "utun-userspace") -> None:
+        self._closed = False
+        self._send_error_logged = False
+        self._peer, self._pend = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        for s in (self._peer, self._pend):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, FAKE_TUN_BUFFER_BYTES)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, FAKE_TUN_BUFFER_BYTES)
+        self._peer.setblocking(False)
+        self._pend.setblocking(False)
+
+    def write(self, data: bytes) -> None:
+        ipv6 = data[len(LOOPBACK_HEADER) :] if data[: len(LOOPBACK_HEADER)] == LOOPBACK_HEADER else data
+        try:
+            self._peer.send(_ETH_HDR_TO_STACK + ipv6)
+        except BlockingIOError:
+            pass
+        except OSError as e:
+            if e.errno != errno.ENOBUFS:
+                raise
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for s in (self._peer, self._pend):
+            s.close()
 
 
 class _Rsd:

@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from agent_atv_bridge.errors import BridgeError
 
-from . import image
+from . import image, inbound_queue
 
 _LOGGER = logging.getLogger("agent_atv_screen.pmd3")
 
@@ -245,6 +245,7 @@ class Pmd3Backend:
         self._ax_lock = asyncio.Lock()
         reader = self._pmd3.dtx_reader
         reader.MAX_BUFFERED_SIZE = max(reader.MAX_BUFFERED_SIZE, DTX_MAX_BUFFERED)
+        inbound_queue.install(self._pmd3.userspace_tunnel)
         # The stock no-root provider always starts with usbmux, which an Apple TV (Wi-Fi only) never reaches.
         self._pmd3.userspace_tunnel._create_no_root_tunnel_provider = self._provider
         self._pmd3.tunnel_service.input = self._read_pin

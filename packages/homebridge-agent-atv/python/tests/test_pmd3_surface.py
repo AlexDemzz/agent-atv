@@ -7,6 +7,7 @@ requirements-screen.txt).
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import importlib
 import inspect
 import unittest
@@ -99,6 +100,26 @@ class Pmd3SurfaceTest(unittest.TestCase):
 
         self.assertTrue(inspect.isasyncgenfunction(AccessibilityAudit.iter_events))
         self.assertTrue(inspect.isasyncgenfunction(fake.AccessibilityAudit.iter_events))
+
+    def test_the_tunnel_write_the_worker_replaces_is_the_one_it_reimplements(self) -> None:
+        from pymobiledevice3.remote.userspace_tunnel import UserspaceTun
+
+        # agent_atv_screen.inbound_queue rewrites this function with a queue in place of the drop.
+        # Another pymobiledevice3 version may handle inbound packets differently: compare it with
+        # write() and the queue, then update both and this digest.
+        source = inspect.getsource(UserspaceTun.write)
+        self.assertEqual(
+            hashlib.sha256(source.encode()).hexdigest(),
+            "631d0efa351d33851ef53831307d98d84c3bee6014e11a310bdb5ffab5bd867a",
+            "UserspaceTun.write changed: review agent_atv_screen/inbound_queue.py against it",
+        )
+        tun = UserspaceTun()
+        try:
+            self.assertFalse(tun._peer.getblocking())
+            self.assertFalse(tun._send_error_logged)
+        finally:
+            tun._peer.close()
+            tun._pend.close()
 
     def test_the_dtx_buffer_limit_is_a_module_setting(self) -> None:
         from pymobiledevice3.dtx import _reader

@@ -496,6 +496,52 @@ class LostSessionTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
 
+class InboundPacketsTest(ScreenWorkerTestCase):
+    """The Apple TV sends a capture in bursts larger than the tunnel's capped socketpair buffer."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.connected()
+        self.tun = fake_pmd3.UserspaceTun()
+        self.addAsyncCleanup(self.tun.close)
+
+    def packet(self, index: int) -> bytes:
+        return fake_pmd3.LOOPBACK_HEADER + index.to_bytes(4, "big") + bytes(996)
+
+    async def received(self, expected: int) -> list:
+        """The packet indexes that reach the stack's end, in arrival order."""
+        indexes = []
+        loop = asyncio.get_running_loop()
+        quiet_until = loop.time() + 0.2
+        while len(indexes) < expected and loop.time() < quiet_until:
+            try:
+                frame = self.tun._pend.recv(65535)
+            except (BlockingIOError, InterruptedError):
+                await asyncio.sleep(0.001)
+                continue
+            quiet_until = loop.time() + 0.2
+            self.assertEqual(frame[:14], fake_pmd3._ETH_HDR_TO_STACK)
+            indexes.append(int.from_bytes(frame[14:18], "big"))
+        return indexes
+
+    async def test_queues_the_packets_a_full_tunnel_buffer_would_drop_and_delivers_them_in_order(self) -> None:
+        for index in range(200):
+            self.tun.write(self.packet(index))
+
+        self.assertEqual(await self.received(200), list(range(200)))
+
+    async def test_a_queue_at_its_bound_drops_the_newest_packets_and_keeps_the_order_of_the_rest(self) -> None:
+        sent = 2000
+        for index in range(sent):
+            self.tun.write(self.packet(index))
+
+        indexes = await self.received(sent)
+
+        self.assertGreater(len(indexes), 512)
+        self.assertLess(len(indexes), sent)
+        self.assertEqual(indexes, list(range(len(indexes))))
+
+
 class ScreenshotTest(ScreenWorkerTestCase):
     async def test_writes_the_png_to_the_requested_path_with_mode_0600(self) -> None:
         await self.connected()
