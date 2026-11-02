@@ -1,7 +1,7 @@
 {
   "name": "homebridge-agent-atv",
   "displayName": "Agent ATV",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Control an Apple TV from AI agents: an authenticated HTTP API (pyatv bridge), keyboard input, wait conditions, optional screen reading (focused element, screenshots), and a minimal HomeKit TV accessory.",
   "license": "MIT",
   "author": "AlexDemzz",
