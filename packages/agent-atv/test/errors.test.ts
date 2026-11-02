@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -146,7 +147,8 @@ describe('help and version', () => {
   it('prints the package version', async () => {
     const result = await sandbox.run(['--version']);
     expect(result.code).toBe(0);
-    expect(result.stdout).toBe('0.1.0\n');
+    const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+    expect(result.stdout).toBe(`${version}\n`);
   });
 
   it('lists commands with --help and points agents at the core skill', async () => {
