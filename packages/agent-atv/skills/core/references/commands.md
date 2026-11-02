@@ -51,7 +51,7 @@ The default screenshot path is `<tmpdir>/agent-atv/screenshot-<device id>-<YYYYM
 | `back`, `home` | same as `press` | `pressed menu`, `pressed home` |
 | `open <target>` | `--wait-ms <ms>` (default 15000, max 60000), `--no-wait`, `--settle` | `opened Netflix (com.netflix.Netflix)`, or `launched <target>`, or `launched <bundle id> (not in foreground after 15000ms)`, or `launched <bundle id> (foreground app not known, <reason>: <what to do>)` without waiting (exit 0) |
 | `type <text>`, `fill <text>`, `clear` | `--settle` | `keyboard: "<text now in the field>"` |
-| `power [on\|off\|toggle]` | | `power: on` |
+| `power [on\|off\|toggle]` | | `power: on`, once the Apple TV confirms it (up to about 30 s) |
 | `volume [level\|up\|down]` | `--step <n>` (1-50) with `up`/`down` | `volume: 40` |
 | `seek <90\|+30\|-10\|12:33\|1:02:03>` | | `position: 12:33` |
 

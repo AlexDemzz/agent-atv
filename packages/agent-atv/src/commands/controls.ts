@@ -6,6 +6,9 @@ import { formatDuration, formatVolume, type State } from '../output.js';
 import { sendKeys } from './press.js';
 import { fetchState } from './state.js';
 
+/** Above the plugin's power.set timeout: the plugin waits up to about 35 s for the Apple TV to confirm. */
+const POWER_TIMEOUT_MS = 50_000;
+
 export const power: Command = {
   name: 'power',
   usage: 'power [on|off|toggle]',
@@ -21,9 +24,11 @@ export const power: Command = {
       return ctx.print(`power: ${current.power}`);
     }
     const on = arg === 'toggle' ? (await fetchState(ctx)).power !== 'on' : arg === 'on';
-    const response = await ctx
-      .client()
-      .json<{ ok: true; power: string; state: State }>('POST', devicePath(ctx.device(), '/power'), { body: { on } });
+    const client = ctx.client();
+    const response = await client.json<{ ok: true; power: string; state: State }>('POST', devicePath(ctx.device(), '/power'), {
+      body: { on },
+      timeoutMs: Math.max(client.timeoutMs, POWER_TIMEOUT_MS),
+    });
     if (ctx.json) return ctx.printJson(response);
     ctx.print(`power: ${response.power}`);
   },

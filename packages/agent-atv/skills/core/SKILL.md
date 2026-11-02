@@ -59,7 +59,7 @@ Wait for the change you expect:
 | playback to start or pause | `wait --playing`, `wait --paused` |
 | a text field to take focus | `wait --keyboard` |
 | an element to take focus (a row loading, a dialog) | `wait --focus <text in its label or id>` |
-| the TV to turn on or off | `wait --power on` |
+| the TV to turn on or off by other means (`power on\|off` already waits) | `wait --power on` |
 | a title or text in the metadata | `wait --text <substring>` |
 | anything else that settles | `wait --idle 1000` |
 

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { APPS, DEVICE_ID, installAppleTv, type AppleTvOptions } from './support/apple-tv';
-import { FakeBridge } from './support/fake-bridge';
+import { BridgeFailure, FakeBridge } from './support/fake-bridge';
 import { makeStorage, seedPairedDevice, startPlugin, stopAll, waitConnected } from './support/harness';
 
 afterEach(stopAll);
@@ -154,6 +154,32 @@ describe('keyboard, power, volume, seek (P1)', () => {
     const seek = await plugin.post(`${base}/seek`, { position: 754 });
     expect(seek.body).toMatchObject({ ok: true });
     expect(bridge.calls('seek')).toEqual([{ device: DEVICE_ID, position: 754 }]);
+  });
+
+  it('waits beyond the 15 s action timeout for the Apple TV to confirm a power change', async () => {
+    const { plugin, bridge } = await connectedPlugin();
+    bridge.handle('power.set', () => new Promise((resolve) => setTimeout(() => resolve({ power: 'on' }), 16_000)));
+
+    const response = await plugin.post(`${base}/power`, { on: true });
+
+    expect(response.body).toMatchObject({ ok: true, power: 'on', state: { power: 'on' } });
+  }, 25_000);
+
+  it.each([
+    [true, 'Run agent-atv power on again, then check with: agent-atv wait --power on'],
+    [false, 'Run agent-atv power off again, then check with: agent-atv wait --power off'],
+  ])('answers an unconfirmed power change (on: %s) with 504 and the commands to retry', async (on, hint) => {
+    const { plugin, bridge } = await connectedPlugin();
+    const requested = on ? 'on' : 'off';
+    const current = on ? 'off' : 'on';
+    bridge.handle('power.set', () => {
+      throw new BridgeFailure('POWER_NOT_CONFIRMED', `Living Room still reports power ${current}`, { requested, power: current });
+    });
+
+    const response = await plugin.post(`${base}/power`, { on });
+
+    expect(response.status).toBe(504);
+    expect(response.body.error).toMatchObject({ code: 'POWER_NOT_CONFIRMED', hint, details: { requested, power: current } });
   });
 
   it.each([

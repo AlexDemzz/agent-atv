@@ -18,7 +18,6 @@ agent-atv snapshot
 
 if [[ "$(agent-atv state power)" != "on" ]]; then
   agent-atv power on
-  agent-atv wait --power on --timeout 15000
 fi
 
 # Act: open the Search app, then wait for its text field to be focused

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import unittest
 
 from agent_atv_bridge.backend_pyatv import PyatvBackend
@@ -11,13 +12,24 @@ from tests import fake_pyatv as fp
 from tests.in_process_bridge import InProcessBridge
 
 DEVICE = "A1B2C3D4E5F6"
-FAST = Timings(debounce_s=0.02, poll_s=0.05, position_only_s=0.4, pairing_ttl_s=0.2, call_timeout_s=0.3)
+FAST = Timings(debounce_s=0.02, poll_s=0.05, position_only_s=0.4, pairing_ttl_s=0.2, call_timeout_s=0.3,
+               power_on_wait_s=0.4, power_off_wait_s=0.3, probe_timeout_s=0.2, probe_s=60, probe_grace_s=0.1)
+
+
+async def until(condition, timeout: float = 1.0) -> None:
+    async def poll() -> None:
+        while not condition():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout)
 
 
 class PyatvBridgeTestCase(unittest.IsolatedAsyncioTestCase):
+    TIMINGS = FAST
+
     async def asyncSetUp(self) -> None:
         self.pyatv = fp.FakePyatv()
-        self.bridge = InProcessBridge(PyatvBackend(self.pyatv, timings=FAST))
+        self.bridge = InProcessBridge(PyatvBackend(self.pyatv, timings=self.TIMINGS))
 
     async def asyncTearDown(self) -> None:
         await self.bridge.close()
@@ -413,15 +425,6 @@ class MethodTest(ConnectedTestCase):
         error = await self.bridge.error("app.launch", {"device": DEVICE, "target": "com.example.Nope"})
         self.assertEqual((error["code"], error["details"]), ("LAUNCH_FAILED", {"target": "com.example.Nope"}))
 
-    async def test_power_set_does_not_wait_for_the_new_state(self) -> None:
-        self.atv.power.fake_state = fp.PowerState.Off
-        self.assertEqual(await self.bridge.call("power.set", {"device": DEVICE, "on": True}), {"power": "off"})
-        await self.bridge.call("power.set", {"device": DEVICE, "on": False})
-        self.assertEqual(
-            self.atv.power.fake_calls,
-            [("turn_on", (), {"await_new_state": False}), ("turn_off", (), {"await_new_state": False})],
-        )
-
     async def test_volume_set_returns_the_new_volume(self) -> None:
         self.assertEqual(await self.bridge.call("volume.set", {"device": DEVICE, "level": 42}), {"volume": 42})
         self.assertEqual(self.atv.audio.fake_calls, [("set_volume", (42,), {})])
@@ -435,6 +438,136 @@ class MethodTest(ConnectedTestCase):
         self.assertEqual(await self.bridge.call("disconnect", {"device": DEVICE}), {})
         self.assertTrue(self.atv.fake_closed)
         self.assertEqual(await self.bridge.call("disconnect", {"device": DEVICE}), {})
+        self.assertEqual(self.bridge.events("connection"), [])
+
+
+class PoweredTestCase(ConnectedTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.connect()
+        self.atv = self.pyatv.fake_atv
+        self.power = self.atv.power
+
+    def apple_tv_reports(self, state) -> None:
+        old, self.power.fake_state = self.power.fake_state, state
+        self.power.listener.powerstate_update(old, state)
+
+
+class PowerTest(PoweredTestCase):
+    async def test_power_on_answers_once_the_apple_tv_reports_it_on(self) -> None:
+        self.power.fake_state = fp.PowerState.Off
+        request = self.bridge.send("power.set", {"device": DEVICE, "on": True})
+        await until(lambda: self.power.fake_calls)
+        await asyncio.sleep(0.1)
+        self.apple_tv_reports(fp.PowerState.Unknown)
+        await asyncio.sleep(0.05)
+        self.assertEqual([m for m in self.bridge.writer.messages if m.get("id") == request], [])
+        self.apple_tv_reports(fp.PowerState.On)
+        self.assertEqual((await self.bridge.response(request))["result"], {"power": "on"})
+        self.assertEqual(self.power.fake_calls, [("turn_on", (), {"await_new_state": False})])
+
+    async def test_power_off_answers_once_the_apple_tv_reports_it_off(self) -> None:
+        request = self.bridge.send("power.set", {"device": DEVICE, "on": False})
+        await until(lambda: self.power.fake_calls)
+        self.apple_tv_reports(fp.PowerState.Off)
+        self.assertEqual((await self.bridge.response(request))["result"], {"power": "off"})
+        self.assertEqual(self.power.fake_calls, [("turn_off", (), {"await_new_state": False})])
+
+    async def test_a_device_already_in_the_requested_state_answers_at_once(self) -> None:
+        self.assertEqual(await self.bridge.call("power.set", {"device": DEVICE, "on": True}), {"power": "on"})
+        self.assertEqual(self.power.fake_companion.fake_calls, [])
+
+
+    async def test_a_session_that_misses_the_change_is_dropped_and_the_probed_state_returned(self) -> None:
+        self.power.fake_state = fp.PowerState.Off
+        self.power.fake_companion.fake_attention = fp.SystemStatus.Awake
+        self.bridge.mark_events_seen()
+        self.assertEqual(await self.bridge.call("power.set", {"device": DEVICE, "on": True}), {"power": "on"})
+        event = await self.bridge.next_event("connection")
+        self.assertEqual((event["data"]["status"], event["data"]["reason"]), ("disconnected", "stale_session"))
+        self.assertEqual((await self.bridge.error("state", {"device": DEVICE}))["code"], "NOT_CONNECTED")
+        self.assertTrue(self.atv.fake_closed)
+
+    async def test_an_apple_tv_that_stays_in_the_old_state_is_not_confirmed(self) -> None:
+        self.power.fake_state = fp.PowerState.Off
+        self.bridge.mark_events_seen()
+        error = await self.bridge.error("power.set", {"device": DEVICE, "on": True})
+        self.assertEqual((error["code"], error["details"]), ("POWER_NOT_CONFIRMED", {"requested": "on", "power": "off"}))
+        self.assertEqual(self.power.fake_companion.fake_calls, [("fetch_attention_state", (), {})])
+        self.assertEqual(self.bridge.events("connection"), [])
+        self.assertTrue((await self.bridge.request("state", {"device": DEVICE}))["ok"])
+
+    async def test_an_unanswered_probe_is_not_confirmed_and_drops_the_session(self) -> None:
+        self.power.fake_companion.fake_gates["fetch_attention_state"] = asyncio.Event()
+        self.bridge.mark_events_seen()
+        error = await self.bridge.error("power.set", {"device": DEVICE, "on": False})
+        self.assertEqual((error["code"], error["details"]), ("POWER_NOT_CONFIRMED", {"requested": "off", "power": "on"}))
+        self.assertEqual((await self.bridge.next_event("connection"))["data"]["reason"], "stale_session")
+
+
+class SessionCheckTest(PoweredTestCase):
+    TIMINGS = dataclasses.replace(FAST, probe_s=0.1)
+
+    def fetches(self) -> int:
+        return len(self.power.fake_companion.fake_calls)
+
+    async def test_a_session_that_agrees_with_the_apple_tv_is_kept(self) -> None:
+        await until(lambda: self.fetches() >= 3)
+        self.assertEqual(self.bridge.events("connection"), [])
+
+    async def test_a_session_whose_updates_stopped_is_dropped(self) -> None:
+        self.power.fake_companion.fake_attention = fp.SystemStatus.Asleep
+        event = await self.bridge.next_event("connection")
+        self.assertEqual(event["data"]["reason"], "stale_session")
+        self.assertIn("the Apple TV says power off but the session still says on", event["data"]["message"])
+        self.assertEqual((await self.bridge.error("state", {"device": DEVICE}))["code"], "NOT_CONNECTED")
+
+    async def test_an_update_arriving_just_after_the_answer_keeps_the_session(self) -> None:
+        self.power.fake_companion.fake_attention = fp.SystemStatus.Asleep
+        await until(lambda: self.fetches() >= 1)
+        self.apple_tv_reports(fp.PowerState.Off)
+        await until(lambda: self.fetches() >= 3)
+        self.assertEqual(self.bridge.events("connection"), [])
+
+    async def test_a_session_that_gets_no_answer_is_dropped(self) -> None:
+        self.power.fake_companion.fake_gates["fetch_attention_state"] = asyncio.Event()
+        event = await self.bridge.next_event("connection")
+        self.assertEqual(event["data"]["reason"], "stale_session")
+        self.assertIn("no answer", event["data"]["message"])
+
+    async def test_a_session_whose_companion_link_fails_is_dropped(self) -> None:
+        failure = fp.ProtocolError("Command FetchAttentionState failed")
+        failure.__cause__ = ConnectionResetError("reset by peer")
+        self.power.fake_companion.fake_errors["fetch_attention_state"] = failure
+        event = await self.bridge.next_event("connection")
+        self.assertEqual(event["data"]["reason"], "stale_session")
+        self.assertIn("FetchAttentionState failed", event["data"]["message"])
+
+    async def test_an_apple_tv_that_refuses_the_question_is_not_asked_again(self) -> None:
+        self.power.fake_companion.fake_errors["fetch_attention_state"] = fp.ProtocolError("Command failed: No request handler")
+        await until(lambda: self.fetches() >= 1)
+        await asyncio.sleep(0.3)
+        self.assertEqual((self.fetches(), self.bridge.events("connection")), (1, []))
+
+    async def test_no_question_while_a_power_command_runs(self) -> None:
+        self.power.fake_gates["turn_off"] = asyncio.Event()
+        request = self.bridge.send("power.set", {"device": DEVICE, "on": False})
+        await asyncio.sleep(0.25)
+        self.assertEqual(self.fetches(), 0)
+        self.power.fake_gates["turn_off"].set()
+        self.apple_tv_reports(fp.PowerState.Off)
+        self.assertTrue((await self.bridge.response(request))["ok"])
+
+    async def test_an_answer_overtaken_by_a_power_command_is_ignored(self) -> None:
+        gate = self.power.fake_companion.fake_gates["fetch_attention_state"] = asyncio.Event()
+        await until(lambda: self.fetches() >= 1)
+        self.power.fake_companion.fake_attention = fp.SystemStatus.Awake
+        request = self.bridge.send("power.set", {"device": DEVICE, "on": False})
+        await until(lambda: self.power.fake_calls)
+        self.apple_tv_reports(fp.PowerState.Off)
+        self.assertTrue((await self.bridge.response(request))["ok"])
+        gate.set()
+        await asyncio.sleep(0.25)
         self.assertEqual(self.bridge.events("connection"), [])
 
 

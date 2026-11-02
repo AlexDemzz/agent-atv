@@ -44,6 +44,16 @@ class PowerState(Enum):
     On = 2
 
 
+class SystemStatus(Enum):
+    """pyatv.protocols.companion.api.SystemStatus, not in pyatv.const."""
+
+    Unknown = 0
+    Asleep = 1
+    Screensaver = 2
+    Awake = 3
+    Idle = 4
+
+
 class KeyboardFocusState(Enum):
     Unknown = 0
     Unfocused = 1
@@ -142,6 +152,10 @@ class OperationTimeoutError(Exception):
     pass
 
 
+class ProtocolError(Exception):
+    pass
+
+
 exceptions = types.SimpleNamespace(
     ConnectionFailedError=ConnectionFailedError,
     ConnectionLostError=ConnectionLostError,
@@ -154,6 +168,7 @@ exceptions = types.SimpleNamespace(
     BlockedStateError=BlockedStateError,
     InvalidResponseError=InvalidResponseError,
     OperationTimeoutError=OperationTimeoutError,
+    ProtocolError=ProtocolError,
 )
 
 
@@ -479,6 +494,31 @@ class FakePushUpdater(_StateProducer):
         self.fake_started = False
 
 
+class FakeCompanionAPI(_Recorder):
+    """Imitates pyatv.protocols.companion.api.CompanionAPI (checked by its own B3 test).
+
+    `fake_attention` overrides what FetchAttentionState answers; by default it agrees with the power state.
+    """
+
+    def __init__(self, power: "FakePower") -> None:
+        super().__init__()
+        self._power = power
+        self.fake_attention: Optional[SystemStatus] = None
+
+    async def fetch_attention_state(self) -> SystemStatus:
+        await self._record("fetch_attention_state")
+        if self.fake_attention is not None:
+            return self.fake_attention
+        return SystemStatus.Asleep if self._power.fake_state == PowerState.Off else SystemStatus.Awake
+
+
+class FakeCompanionPower:
+    """Imitates pyatv.protocols.companion.CompanionPower, reached through the facade's `_interfaces`."""
+
+    def __init__(self, power: "FakePower") -> None:
+        self.api = FakeCompanionAPI(power)
+
+
 class FakePower(_StateProducer, _Recorder):
     IMITATES = "interface.Power"
 
@@ -486,6 +526,8 @@ class FakePower(_StateProducer, _Recorder):
         _StateProducer.__init__(self)
         _Recorder.__init__(self)
         self.fake_state = PowerState.On
+        self._interfaces = {Protocol.Companion: FakeCompanionPower(self)}
+        self.fake_companion = self._interfaces[Protocol.Companion].api
 
     @property
     def power_state(self) -> PowerState:

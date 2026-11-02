@@ -106,8 +106,10 @@ export function methodTimeoutMs(method: string, params: Json): number {
       return 30 * SECOND;
     case 'apps.list':
     case 'app.launch':
-    case 'power.set':
       return 15 * SECOND;
+    case 'power.set':
+      // The bridge waits up to 20 s for the new state, plus the command and a 6 s session check.
+      return 45 * SECOND;
     default:
       return 10 * SECOND;
   }
