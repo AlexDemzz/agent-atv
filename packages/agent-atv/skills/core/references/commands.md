@@ -13,7 +13,7 @@ Global flags go before or after the command. Slow commands (`wait`, `open`, `sca
 | --- | --- | --- |
 | `snapshot` | `--screenshot [path]`, `--no-focus` | the snapshot block; with `--screenshot`, also `Screenshot: <path> (<w>x<h>)` or `Screenshot: unavailable, <reason>: <what to do>`, exit 0 either way |
 | `state [field]` | | one line per field, below. Without a field, the snapshot block from the cache, without `App:` and `Focus:` |
-| `screenshot [path]` | `--if-changed` | `<path> (3840x2160, 2.1s)`, or `unchanged <previous path>` |
+| `screenshot [path]` | `--max-width <px>` (160-3840, never scales up), `--jpeg`, `--if-changed` | `<path> (3840x2160, 2.1s)`, or `unchanged <previous path>` |
 | `apps` | `--filter <substr>`, `--refresh` | `<bundle id>  <name>` per line, sorted by name |
 
 Snapshot block, top to bottom:
@@ -39,8 +39,9 @@ Snapshot block, top to bottom:
 `seq`, `focus` (`"Netflix" (id app-icon/com.netflix.Netflix)`, read live; exit 8 when screen reading
 can't answer). With `--json`: `{"<field>": value}`.
 
-The default screenshot path is `<tmpdir>/agent-atv/screenshot-<device id>-<YYYYMMDD-HHMMSS>.png` (UTC).
-`--if-changed` compares with the last capture of that device.
+The default screenshot path is `<tmpdir>/agent-atv/screenshot-<device id>-<YYYYMMDD-HHMMSS>.png` (UTC),
+`.jpg` with `--jpeg`. `--if-changed` compares with the last capture of that device, so it reports
+`unchanged` only for a capture taken with the same `--max-width` and `--jpeg`.
 
 ## Act
 

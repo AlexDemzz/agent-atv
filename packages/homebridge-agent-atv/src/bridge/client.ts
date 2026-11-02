@@ -62,6 +62,8 @@ export interface BridgeClientOptions<Ready> {
   label?: string;
   /** Prefix of the child's forwarded stderr lines; default "bridge". */
   logPrefix?: string;
+  /** Where the child's INFO stderr lines go; default debug. */
+  infoLevel?: 'info' | 'debug';
   /** Plugin-side request timeouts; default DESIGN.md §2.4. */
   timeoutFor?: (method: string, params: Json) => number;
   /** The log line for a `ready` event. */
@@ -322,6 +324,7 @@ export class BridgeClient<Ready extends object = ReadyEvent> extends EventEmitte
     const text = `${this.options.logPrefix ?? 'bridge'}: ${match?.[2] ?? line}`;
     if (level === 'ERROR') log.error(text);
     else if (level === 'WARNING') log.warn(text);
+    else if (level === 'INFO' && this.options.infoLevel === 'info') log.info(text);
     else log.debug(text);
   }
 }

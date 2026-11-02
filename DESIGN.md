@@ -81,7 +81,7 @@ agent-atv/
     │   │   ├── wait/conditions.ts    pure condition evaluator (§3.6)
     │   │   ├── wait/waiter.ts        event-driven waiter with timeout
     │   │   ├── screen/service.ts     screen workers, focus reports, screenshots (§6)
-    │   │   ├── screen/png.ts         PNG IHDR width/height parser
+    │   │   ├── screen/png.ts         PNG IHDR and JPEG SOF width/height parsers
     │   │   └── homekit/television.ts Television accessory (§5.5)
     │   ├── test/                     vitest *.test.ts, test/support/* helpers, test/fixtures/*
     │   ├── homebridge-ui/
@@ -90,7 +90,7 @@ agent-atv/
     │   │   └── public/index.html     pairing UI, vanilla JS, no build step
     │   └── python/
     │       ├── requirements.txt      (S) pinned pyatv 0.18.0 dependency set
-    │       ├── requirements-screen.txt  pymobiledevice3==11.49.1 (screen venv, §5.2)
+    │       ├── requirements-screen.txt  pymobiledevice3==11.49.1, Pillow (screen venv, §5.2)
     │       ├── agent_atv_bridge/
     │       │   ├── __init__.py       (S) BRIDGE_PROTOCOL_VERSION = 1, __version__ = "0.1.0"
     │       │   ├── __main__.py       (S placeholder) python -m agent_atv_bridge [--fake]
@@ -106,6 +106,7 @@ agent-atv/
     │       │   ├── server.py         serve(backend, reader, writer), the §6.2 protocol
     │       │   ├── backend_pmd3.py   Pmd3Backend(pmd3): the only code that touches pymobiledevice3
     │       │   ├── pmd3.py           load(): the pymobiledevice3 modules Pmd3Backend works through
+│       │   ├── image.py          screenshot maxWidth/format: Pillow, imported only when needed
     │       │   └── backend_fake.py   in-memory fake screen (§6.4)
     │       └── tests/                unittest test_*.py + fake_pyatv.py + fake_pmd3.py; neither library needed
     └── agent-atv/
@@ -501,7 +502,7 @@ the cached State at response time (no settle delay).
 | `POST /devices/:device/seek` | `{"position": seconds}` | `{"ok": true, "state"}` |
 | `POST /devices/:device/wait` | §3.6 | `{"ok": true, "matched": [names], "elapsedMs", "app"?: Foreground, "focus"?: FocusElement, "state"}` |
 | `POST /screen` | `{"enabled": true}` | `{"ok": true, "screen": ScreenInfo}`: turns screen reading on in the running plugin (§5.6) |
-| `POST /devices/:device/screenshot` | `{"ifNoneMatch"?: "<sha256 hex>"}` | 200 `image/png`, or 304 empty. Headers `X-Agent-ATV-Sha256`, `X-Agent-ATV-Width`, `X-Agent-ATV-Height`, `X-Agent-ATV-Captured-At`, `X-Agent-ATV-Duration-Ms` |
+| `POST /devices/:device/screenshot` | `{"ifNoneMatch"?: "<sha256 hex>", "maxWidth"?: 160..3840, "format"?: "png" \| "jpeg"}` | 200 `image/png` (or `image/jpeg` for `format: "jpeg"`), or 304 empty. Headers `X-Agent-ATV-Sha256`, `X-Agent-ATV-Width`, `X-Agent-ATV-Height`, `X-Agent-ATV-Captured-At`, `X-Agent-ATV-Duration-Ms` |
 | `POST /devices/:device/pair` | `{"protocol"?: "companion"\|"airplay"\|"remotepairing"}` | `{"pairingId", "device": {id, name}, "protocol", "step": 1, "steps": 3, "message": "Enter the 4-digit PIN shown on Living Room"}` |
 | `POST /pairings/:pairingId/pin` | `{"pin": "1234"}` (4 to 8 digits) | `{"status": "next", "pairingId", "protocol": "airplay", "step": 2, "steps": 3, "message"}` or `{"status": "done", "device": DeviceSummary, "warning"?: string}` |
 | `DELETE /pairings/:pairingId` | | `{"ok": true}` |
@@ -717,14 +718,18 @@ $ agent-atv state focus
 `--json` prints `{"<field>": value}`.
 
 **screenshot [path]**: `POST screenshot`. Default path
-`<tmpdir>/agent-atv/screenshot-<deviceId>-<YYYYMMDD-HHMMSS>.png`.
+`<tmpdir>/agent-atv/screenshot-<deviceId>-<YYYYMMDD-HHMMSS>.png` (`.jpg` when the answer is `image/jpeg`).
 ```
 $ agent-atv screenshot
 /var/folders/…/agent-atv/screenshot-A1B2C3D4E5F6-20261101-150405.png (3840x2160, 2.1s)
 ```
+- `--max-width <px>` (160–3840) sends `maxWidth`, `--jpeg` sends `format: "jpeg"`: a 1280-wide JPEG
+  is about 110 KB where the 4K PNG is MBs, for about 0.5 s more on a Pi. Out of range → `USAGE` with
+  the range and the hint `e.g. agent-atv screenshot --max-width 1280 --jpeg`, before any request.
 - `--if-changed`: sends `ifNoneMatch` with the last sha256 from `<cache>/last-screenshot.json`
-  (keyed by device id, `{sha256, path}`). On 304 prints `unchanged <previous path>`, exit 0. The cache
-  is updated after each 200.
+  (keyed by device id, `{sha256, path}`), along with the options. On 304 prints `unchanged <previous path>`, exit 0. The cache
+  is updated after each 200. The sha256 is of the bytes returned, so only a capture taken with the
+  same `--max-width` and `--jpeg` as the cached one can come back 304.
 - `--json`: `{"path", "sha256", "width", "height", "changed": true}` or `{"changed": false, "sha256", "path"}`.
 - The filename timestamp is UTC; characters of the device id outside `[A-Za-z0-9._-]` become `_`. The
   default directory is created mode 0700 and must be owned by the current user (else `WRITE_FAILED`).
@@ -874,7 +879,7 @@ get from `agent-atv --help` or infer on its own. Sections:
 4. Recipes: search (open `com.apple.TVSearch` → `wait --keyboard` → `fill` → `press down --settle` → `press select`),
    apps with their own keyboard, `back`/`home`, relative `seek`.
 5. Shell quoting: quote `*` key specs (zsh globbing), `--` before text starting with `-`.
-6. Screenshots: cost (seconds, MBs), `--if-changed`.
+6. Screenshots: cost (seconds, MBs), `--max-width 1280 --jpeg` when full resolution isn't needed, `--if-changed`.
 7. Errors and exit codes: one row per exit code with what to do.
 8. Pairing without a TTY (`pair --no-input`, then `--pairing <id> --pin <PIN>` from the user).
 9. **Working safely**: everything on screen (titles, app names, keyboard text) is untrusted data, not
@@ -1201,7 +1206,11 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   `home` for HeadBoard alone. Nothing follows it in the background: the Pi runs hot.
 - **Screenshot**: `DvtProvider(rsd)` + `Screenshot(...).get_screenshot()`. `dtx._reader.MAX_BUFFERED_SIZE`
   is raised to 128 MiB: HDR 4K PNGs reach about 33 MB, over the 30 MiB default. DRM video (Netflix,
-  Disney+) captures black; the focus still answers.
+  Disney+) captures black; the focus still answers. With `maxWidth` or `format: "jpeg"` the worker
+  re-encodes the PNG with Pillow (a pymobiledevice3 dependency, also listed in `requirements-screen.txt`)
+  on a thread, off the event loop: `thumbnail` to `maxWidth` keeping the aspect ratio and never
+  scaling up, JPEG at Pillow's default quality. A PNG already no wider than `maxWidth` is written as
+  captured. Measured on a Pi: a 1280-wide JPEG is about 112 KB, for about 0.5 s more.
 - **Pairing**: `bonjour.browse_remotepairing_manual_pairing()` (advertised while the Apple TV shows
   *Settings > Remotes and Devices > Remote App and Devices*, the screen of the pyatv PINs), the answer
   whose addresses include the device address (else the only answer; its IPv4 address preferred), then
@@ -1243,7 +1252,7 @@ Methods (plugin timeouts in brackets):
 | `ping` [5 s] | `{}` | `{"pong": true, ...status}` |
 | `focus` [90 s] | `{}` | `{"focus": {"label", "value", "identifier"}, "ageMs"}` for the element tvOS last moved the focus to; `ageMs` is how long before the request arrived tvOS reported that move (negative for a move during the read). `FOCUS_UNKNOWN` (§6.1) before the first move the session saw, after a screen change or a layout change the daemon did not confirm the element through, or when the move has no element or every attribute is empty |
 | `foreground` [90 s] | `{}` | Foreground (§6.1): `{"kind": "app", "bundleId", "name"}`, `{"kind": "home"}`, `{"kind": "screensaver"}` or `{"kind": "ambiguous", "apps": [{"bundleId", "name"}]}`; `SCREEN_FAILED` when nothing but the shell is in front |
-| `screenshot` [110 s] | `{"path": "<absolute path>"}` | writes the PNG there (mode 0600), `{"bytes"}` |
+| `screenshot` [110 s] | `{"path": "<absolute path>", "maxWidth"?: int > 0, "format"?: "png" \| "jpeg"}` | writes the image there (mode 0600), `{"bytes"}`; §6.1 Screenshot. Without Pillow, `maxWidth` or `jpeg` fail with `SCREEN_FAILED` saying how to reinstall |
 | `pair.begin` [70 s] | `{}` | `{}` once the Apple TV shows its PIN; browses up to 20 s |
 | `pair.pin` [40 s] | `{"pin": "4 to 8 digits"}` | `{"identifier"}`; then the worker opens the tunnel |
 | `pair.cancel` [10 s] | `{}` | `{}` |
@@ -1260,6 +1269,12 @@ Methods (plugin timeouts in brackets):
   takes the new record and opens the tunnel.
 - `focus`, `foreground` and `screenshot` wait for a tunnel being opened (up to 30 s; a request wakes a backing-off
   supervisor), retry once on a fresh tunnel when the call fails, and serialize per kind.
+- Logs: INFO lines are status changes only, and the plugin logs them at info (§6.3): the focus
+  following stopping or resuming (a failure retried at every health check logs at its first
+  failure only), another inspector taking over, a read retried on a fresh tunnel, and the late
+  retarget (§6.1 One target) or its failure. Everything else is DEBUG: no line per request. The
+  worker runs its own loggers at INFO and every other one (pymobiledevice3, PyTCP, asyncio) at
+  WARNING; `AGENT_ATV_BRIDGE_DEBUG=1` switches all to DEBUG.
 - Errors: `SCREEN_NOT_PAIRED` (no record), `SCREEN_UNAVAILABLE` (no tunnel, `details.tunnel`),
   `SCREEN_FAILED` (the retry failed too, `details.exception`), `FOCUS_UNKNOWN` (§6.1, the message says
   which case; a retry on a fresh tunnel also ends here), `PAIRING_FAILED` (not advertised,
@@ -1318,9 +1333,16 @@ settings`.
 - AppReport, never an error, for `state?app=1` (and the reads of `open`): `{"available": true, ...Foreground}`
   or the same unavailable shape as FocusReport (`SCREEN_FAILED` reason: `foreground read failed`).
   One read through a tunnel already `connected`, bounded to 5 s, as for the focus.
-- `screenshot`: the worker writes `os.tmpdir()/agent-atv-<random>.png`; the plugin reads and deletes
-  it, checks the IHDR (`SCREEN_FAILED` otherwise), sha256, `ifNoneMatch === sha256` → 304, otherwise
-  200 with the PNG and the §3.5 headers.
+- `screenshot`: validates `maxWidth` (integer 160–3840, `BAD_REQUEST` `field: maxWidth` with the hint
+  `Pass a width from 160 to 3840, e.g. agent-atv screenshot --max-width 1280 --jpeg`) and `format`
+  before calling the worker, which writes `os.tmpdir()/agent-atv-<random>.png` (`.jpg`); the plugin
+  reads and deletes it, checks the PNG IHDR or the JPEG SOF for the size (`SCREEN_FAILED` otherwise),
+  sha256 of those bytes, `ifNoneMatch === sha256` → 304, otherwise 200 with the image, its
+  `Content-Type` and the §3.5 headers.
+- Log: worker stderr as §2.1, except INFO lines at info (§6.2 Logs). Tunnel changes from `status`
+  at info, `<name>: screen reading connected | connecting | reconnecting | disconnected (<error>);
+  retrying with backoff | not paired (<error>); pair it with agent-atv pair <id> --screen`; while a
+  reconnect keeps failing, only its first `disconnected`, the rest at debug.
 - `/info` `screen`: ScreenInfo `{"enabled", "status", "ready": status ready and a tunnel connected,
   "reason": string|null, "pymobiledevice3": string|null}`. DeviceSummary `screen` is `off` unless the
   status is `ready`, then `starting` until the worker's first `status`, then its `tunnel`.
@@ -1330,7 +1352,8 @@ settings`.
 No pymobiledevice3 import. Paired iff started with `--identifier` or after `pair.pin` with `1234`
 (identifier `FAKE-REMOTEPAIRING-0001`); `pair.begin` always succeeds. Focus
 `{"label": "Fake focus", "value": null, "identifier": "fake/focus"}`; foreground always
-`{"kind": "home"}`; screenshots are a 1920x1080 PNG;
+`{"kind": "home"}`; screenshots are a 1920x1080 PNG, scaled to `maxWidth` (never up), and with
+`format: "jpeg"` a JPEG of just SOI, SOF0 (the size) and EOI;
 tunnel `connected` whenever paired.
 
 ### 6.5 Setup
@@ -1374,7 +1397,7 @@ interface where behaviour is observed; fakes sit at the outermost boundary only.
 
 - **B1. Bridge stdio, fake backend**: spawn `python3 -m agent_atv_bridge --fake`, write request lines, read response/event lines. Catches framing, `ready`, dispatch, validation and error codes, and the fake Apple TV semantics (§2.8) the plugin's contract test relies on; misses everything pyatv does.
 - **B2. Bridge protocol with pyatv faked at its boundary**: in-process `serve(PyatvBackend(tests/fake_pyatv), reader, writer)`; the test sends JSON lines and fires the fake's listener callbacks. Catches the key → pyatv call table, InputAction mapping, pyatv exception → error code mapping, State building, push/poll event emission and debounce, pairing handler lifecycle and 90 s expiry, per-device action serialization; misses real pyatv/tvOS behaviour and API drift (B3).
-- **W1. Screen worker with pymobiledevice3 faked at its boundary**: in-process `serve(Pmd3Backend(fake_pmd3 namespace), reader, writer)` (`tests/test_screen_worker.py`, the B2 harness), plus `python -m agent_atv_screen --fake` over stdio. `tests/fake_pmd3.py` stands in for the provider/RSD (`UserspaceRsdTunnel`, `get_remote_pairing_tunnel_services`, `create_core_device_tunnel_service_using_remotepairing`), `AccessibilityAudit` (as the daemon behaves on tvOS: focus events and UIAccessibility notifications only for the last targeted session with monitored type 2, untargeted by the end of any session, which a tunnel closed too soon after the close delays, and once lost sessions are disposed of, focus moves only after the type is set again, a highlight on each focused element, daemon state that outlives sessions, special elements that are the first and last element), `DvtProvider`/`Screenshot`, `DeviceInfo.proclist()` (processes with the tvOS 27.2 fields, `show()` sets which run in the foreground), the manual-pairing browse and `RemotePairingManualPairingService` (which calls a bare `input()` like the real one). Catches the Wi-Fi provider swap and address choice, record migration (and refusing another Apple TV's record), reconnect and retry, the focus read (followed from the tunnel's start, `FOCUS_UNKNOWN` before a move, after a screen change notification, after a layout change until the daemon confirms the same element, and for an empty or element-less move, `ageMs` from the request's arrival, the highlight cleared after every move, unknown again when another inspector changes the type, the daemon reset on shutdown, a next worker, or the session after a lost tunnel, still followed once the Apple TV disposes of lost sessions, with the focus unknown until the next move, no special elements or cursor moves, one session per tunnel), the DTX buffer raise, the foreground classification (home, an app by its display name, the launch overlap, the screensaver, several apps, only the shell), screenshot files and serialization, the threaded PIN pairing and a late confirmation, the status events and the fake backend; misses real pymobiledevice3, PyTCP and tvOS behaviour (checked by hand on a Pi, §6.1).
+- **W1. Screen worker with pymobiledevice3 faked at its boundary**: in-process `serve(Pmd3Backend(fake_pmd3 namespace), reader, writer)` (`tests/test_screen_worker.py`, the B2 harness), plus `python -m agent_atv_screen --fake` over stdio. `tests/fake_pmd3.py` stands in for the provider/RSD (`UserspaceRsdTunnel`, `get_remote_pairing_tunnel_services`, `create_core_device_tunnel_service_using_remotepairing`), `AccessibilityAudit` (as the daemon behaves on tvOS: focus events and UIAccessibility notifications only for the last targeted session with monitored type 2, untargeted by the end of any session, which a tunnel closed too soon after the close delays, and once lost sessions are disposed of, focus moves only after the type is set again, a highlight on each focused element, daemon state that outlives sessions, special elements that are the first and last element), `DvtProvider`/`Screenshot`, `DeviceInfo.proclist()` (processes with the tvOS 27.2 fields, `show()` sets which run in the foreground), the manual-pairing browse and `RemotePairingManualPairingService` (which calls a bare `input()` like the real one). Catches the Wi-Fi provider swap and address choice, record migration (and refusing another Apple TV's record), reconnect and retry, the focus read (followed from the tunnel's start, `FOCUS_UNKNOWN` before a move, after a screen change notification, after a layout change until the daemon confirms the same element, and for an empty or element-less move, `ageMs` from the request's arrival, the highlight cleared after every move, unknown again when another inspector changes the type, the daemon reset on shutdown, a next worker, or the session after a lost tunnel, still followed once the Apple TV disposes of lost sessions, with the focus unknown until the next move, no special elements or cursor moves, one session per tunnel), the DTX buffer raise, the foreground classification (home, an app by its display name, the launch overlap, the screensaver, several apps, only the shell), screenshot files and serialization, `maxWidth`/`format` (JPEG and PNG scaled down, never up, validation; the Pillow cases skipped without Pillow), INFO logs (a failing follow logged once, the late retarget), the threaded PIN pairing and a late confirmation, the status events and the fake backend; misses real pymobiledevice3, PyTCP and tvOS behaviour (checked by hand on a Pi, §6.1).
 - **W2. pymobiledevice3 surface check**: runs only when pymobiledevice3 is importable (`requirements-screen.txt`); asserts every name in `fake_pmd3.IMITATES` exists with compatible signatures and coroutine-ness, that the objects handed back expose what the worker reads, and that `_create_no_root_tunnel_provider` and `input` are still looked up at call time. Catches the fake drifting from the pinned version; misses runtime behaviour.
 - **B3. pyatv surface check**: runs only when `pyatv` is importable (venv or CI with `requirements.txt`); asserts every function, attribute, enum member and keyword argument `fake_pyatv` imitates exists in the installed pyatv 0.18. Catches the fake drifting from the pinned pyatv; misses runtime behaviour.
 
@@ -1384,14 +1407,14 @@ interface where behaviour is observed; fakes sit at the outermost boundary only.
 - **P2. Plugin ↔ real bridge contract**: the P1 harness with the default spawner and `AGENT_ATV_FAKE_BRIDGE=1` (real Python bridge in `--fake` mode); skipped when `python3` is absent. Catches protocol drift between the plugin and bridge builders (field names, events, error codes, pairing flow); misses pyatv.
 - **P3. Homebridge platform with a fake API**: call the default export of `src/index.ts` with a fake `api` (real HAP from `@homebridge/hap-nodejs`, an EventEmitter for `didFinishLaunching`/`shutdown`, recorded `publishExternalAccessories`) and a fake bridge. Catches platform registration, nothing started before `didFinishLaunching`, invalid config logged without throwing, Television/InputSource/Speaker characteristics driven by state, `onSet` → bridge calls, `onGet` never awaiting the bridge, shutdown stopping the bridge; misses Home app behaviour and real Homebridge lifecycle quirks.
 - **P4. Venv bootstrap with a fake command runner**: `ensureVenv({..., run: fakeRun})` over a temp dir, for `.venv` and `.venv-screen`; plus the core reporting a failed screen venv. Catches create/recreate/install/skip decisions, Python and OpenSSL version gates, error statuses and hints; misses real pip, network and distro Python quirks.
-- **P5. Screen routes with a scripted fake worker**: P1 harness with `spawnScreen` (`test/support/fake-screen.ts` speaks §6.2). Catches the worker spawn spec (args, `HOME`, env scrubbing), identifier persistence, worker restarts with the current address, bounded focus reads, `/focus`, `state?focus=1`, the settled focus after actions that send `"focus": true` and every unavailable report, no read without it, `FOCUS_UNKNOWN` (409, report, `wait` on `focus` polling through it and never matching an unknown focus, no move reported after the keys, a move reported late within the window, a focus older than the last app or playback change), the foreground app (`state?app=1` for each kind and when unavailable, `open` polling it, timing out and returning at once with `foregroundUnknown`, `wait` on `app` never matching `ambiguous`), `POST /screen`, screenshots (temp file, sha256/304, headers, non-PNG), error mapping and hints, `/info` and DeviceSummary `screen`; misses the real worker (W1, C2) and pymobiledevice3.
+- **P5. Screen routes with a scripted fake worker**: P1 harness with `spawnScreen` (`test/support/fake-screen.ts` speaks §6.2). Catches the worker spawn spec (args, `HOME`, env scrubbing), identifier persistence, worker restarts with the current address, bounded focus reads, `/focus`, `state?focus=1`, the settled focus after actions that send `"focus": true` and every unavailable report, no read without it, `FOCUS_UNKNOWN` (409, report, `wait` on `focus` polling through it and never matching an unknown focus, no move reported after the keys, a move reported late within the window, a focus older than the last app or playback change), the foreground app (`state?app=1` for each kind and when unavailable, `open` polling it, timing out and returning at once with `foregroundUnknown`, `wait` on `app` never matching `ambiguous`), `POST /screen`, screenshots (temp file, sha256/304, headers, non-PNG, `maxWidth`/`format` pass-through and validation, `image/jpeg` with its size), status logs at info (a failing reconnect once) and worker INFO lines at info, error mapping and hints, `/info` and DeviceSummary `screen`; misses the real worker (W1, C2) and pymobiledevice3.
 
 The Homebridge UI (`homebridge-ui/`) is a thin proxy with no automated seam; it is checked by hand.
 Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
 
 ### CLI (`packages/agent-atv/test`, vitest)
 
-- **C1. CLI binary against a fake HTTP server**: spawn `node dist/cli.js …` (built once in vitest `globalSetup`) with an isolated `HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`/`TMPDIR` and env pointing at a `node:http` fake API that records requests and returns canned bodies. Catches argv and flags, config precedence and file modes, auth header, request bodies per command, text and `--json` output, stdout/stderr split, exit-code mapping, key specs and aliases, the `pair --no-input` and `--screen` flows, silent actions and `Focus:` lines after `--settle` and in `snapshot`, `App:` lines, `state focus`, `state app`, `open` without screen reading, `wait --focus`, screenshot files and the `--if-changed` cache, `skills get` output; misses interactive TTY prompts and real plugin behaviour.
+- **C1. CLI binary against a fake HTTP server**: spawn `node dist/cli.js …` (built once in vitest `globalSetup`) with an isolated `HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`/`TMPDIR` and env pointing at a `node:http` fake API that records requests and returns canned bodies. Catches argv and flags, config precedence and file modes, auth header, request bodies per command, text and `--json` output, stdout/stderr split, exit-code mapping, key specs and aliases, the `pair --no-input` and `--screen` flows, silent actions and `Focus:` lines after `--settle` and in `snapshot`, `App:` lines, `state focus`, `state app`, `open` without screen reading, `wait --focus`, screenshot files and the `--if-changed` cache, `--max-width`/`--jpeg` (body, `.jpg` default path, range error), `skills get` output; misses interactive TTY prompts and real plugin behaviour.
 - **C2. Full-stack e2e**: CLI binary → `standalone.js` → real bridge and screen worker, both `--fake`, in a temp storage dir with `screen.enabled`; runs only with `AGENT_ATV_E2E=1` after both packages are built (`npm run test:e2e`). Catches cross-package drift on the core loop (three-step pair → snapshot with `Focus:` → silent open → wait → `fill --settle` → `press home --settle` with `Focus:` → silent press → state → `state focus` → `wait --focus` → screenshot → doctor); misses the real Apple TV, pyatv and pymobiledevice3.
 
 ## 9. Root tooling (scaffold)
@@ -1439,8 +1462,8 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
    unmeasured in apps: whether, after a move that sent no event, the daemon confirms the previous
    element after a layout change; a plain read would then show it, while `--settle` still rejects it
    as older than the keys. Each move flashes the daemon's highlight for one round trip.
-   Screenshots of HDR content are 18–33 MB and take up to about 10 s on a Pi; no downscaling without an
-   image library. The persistent tunnel's effect on the Apple TV's sleep is unmeasured.
+   Screenshots of HDR content are 18–33 MB and take up to about 10 s on a Pi; `maxWidth` and
+   `format: "jpeg"` (Pillow, §6.1) shrink what crosses the network, not the capture itself. The persistent tunnel's effect on the Apple TV's sleep is unmeasured.
 4. **The RemotePairing PIN length** isn't documented by Apple; the API accepts 4 to 8 digits for that
    step.
 5. **Only the focused element** is readable (label, value, identifier), not the whole screen, and only

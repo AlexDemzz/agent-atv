@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DEVICE_ID, idlePlaying, installAppleTv, scanDevice } from './support/apple-tv';
 import { BridgeFailure, FakeBridge, NO_RESPONSE } from './support/fake-bridge';
-import { HOME_FOCUS, RP_IDENTIFIER, UNKNOWN, installScreen, type Element } from './support/fake-screen';
+import { HOME_FOCUS, RP_IDENTIFIER, UNKNOWN, installScreen, jpeg, type Element } from './support/fake-screen';
 import { eventually, makeStorage, seedPairedDevice, startPlugin, stopAll, waitConnected, type Plugin } from './support/harness';
 
 afterEach(stopAll);
@@ -114,6 +114,36 @@ describe('screen worker (P5)', () => {
     await eventually(() => worker.spawns.length === 2, 4000);
 
     expect(worker.spawns[1]!.args).toContain('192.168.1.51');
+  });
+
+  it('logs tunnel changes at info, a reconnect that keeps failing only once', async () => {
+    const { plugin, worker } = await screenPlugin();
+    const status = (tunnel: string, error: string | null = null) =>
+      worker.event('status', undefined, { tunnel, identifier: RP_IDENTIFIER, error });
+
+    status('connecting');
+    status('disconnected', 'ConnectionError: not found');
+    status('connecting');
+    status('disconnected', 'ConnectionError: not found');
+    status('connected');
+    await eventually(() => plugin.log.at('info').filter((m) => m.includes('screen reading')).length === 4);
+
+    expect(plugin.log.at('info').filter((m) => m.includes('screen reading'))).toEqual([
+      'Living Room: screen reading connected',
+      'Living Room: screen reading reconnecting',
+      'Living Room: screen reading disconnected (ConnectionError: not found); retrying with backoff',
+      'Living Room: screen reading connected',
+    ]);
+  });
+
+  it("logs the screen worker's INFO lines at info and its DEBUG lines at debug", async () => {
+    const { plugin, worker } = await screenPlugin();
+
+    worker.logStderr('INFO agent_atv_screen.pmd3: Stopped following the focus (ConnectionError)');
+    worker.logStderr('DEBUG agent_atv_screen.pmd3: Closing a session failed');
+
+    await eventually(() => plugin.log.at('debug').some((m) => m.includes('Closing a session failed')));
+    expect(plugin.log.at('info')).toContain('screen Living Room: agent_atv_screen.pmd3: Stopped following the focus (ConnectionError)');
   });
 
   it('restarts a worker that exits', async () => {
@@ -480,6 +510,43 @@ describe('POST /devices/:device/screenshot (P5)', () => {
     expect([same.status, same.raw.length]).toEqual([304, 0]);
 
     expect((await plugin.post(`${base}/screenshot`, { ifNoneMatch: 'f'.repeat(64) })).status).toBe(200);
+  });
+
+  it('asks the worker for a scaled-down JPEG and returns it as image/jpeg with its size', async () => {
+    const { plugin, worker, screen } = await screenPlugin();
+    screen.image = jpeg(1280, 720);
+
+    const response = await plugin.post(`${base}/screenshot`, { maxWidth: 1280, format: 'jpeg' });
+
+    expect(worker.calls('screenshot')[0]).toMatchObject({ maxWidth: 1280, format: 'jpeg' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('image/jpeg');
+    expect(response.raw).toEqual(screen.image);
+    expect(response.headers.get('x-agent-atv-sha256')).toBe(sha256(screen.image));
+    expect([response.headers.get('x-agent-atv-width'), response.headers.get('x-agent-atv-height')]).toEqual(['1280', '720']);
+    const same = await plugin.post(`${base}/screenshot`, { maxWidth: 1280, format: 'jpeg', ifNoneMatch: sha256(screen.image) });
+    expect(same.status).toBe(304);
+  });
+
+  it('rejects a maxWidth out of range or an unknown format before asking the worker', async () => {
+    const { plugin, worker } = await screenPlugin();
+
+    const narrow = await plugin.post(`${base}/screenshot`, { maxWidth: 100 });
+    const gif = await plugin.post(`${base}/screenshot`, { format: 'gif' });
+
+    expect([narrow.status, narrow.body.error.code, narrow.body.error.details]).toEqual([400, 'BAD_REQUEST', { field: 'maxWidth' }]);
+    expect(narrow.body.error.message).toBe('maxWidth must be an integer from 160 to 3840');
+    expect(narrow.body.error.hint).toBe('Pass a width from 160 to 3840, e.g. agent-atv screenshot --max-width 1280 --jpeg');
+    expect([gif.status, gif.body.error.details]).toEqual([400, { field: 'format' }]);
+    expect(worker.calls('screenshot')).toEqual([]);
+  });
+
+  it('answers SCREEN_FAILED when the worker writes something other than the JPEG asked for', async () => {
+    const { plugin } = await screenPlugin();
+
+    const response = await plugin.post(`${base}/screenshot`, { format: 'jpeg' });
+
+    expect([response.status, response.body.error.code]).toEqual([502, 'SCREEN_FAILED']);
   });
 
   it('answers SCREEN_FAILED when the worker writes something that is not a PNG', async () => {

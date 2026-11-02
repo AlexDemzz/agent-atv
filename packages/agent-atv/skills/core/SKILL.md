@@ -92,7 +92,8 @@ stops with `no matches found`. Text that starts with `-` goes after `--`: `agent
 ## Screenshots
 
 A capture takes 0.5 to 10 s and a 4K PNG weighs up to 30 MB. Use the `Focus:` line and `snapshot`
-unless the question is what the whole screen shows. For repeat looks use `screenshot --if-changed`,
+unless the question is what the whole screen shows. Add `--max-width 1280 --jpeg` unless you need
+full resolution: about 100 KB instead of several MB. For repeat looks use `screenshot --if-changed`,
 which prints `unchanged <previous path>` when nothing changed. DRM-protected video captures black.
 
 ## Errors

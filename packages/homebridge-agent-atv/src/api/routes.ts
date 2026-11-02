@@ -2,7 +2,7 @@ import type { BridgeClient } from '../bridge/client';
 import type { AgentAtvConfig } from '../config';
 import type { DeviceManager } from '../devices/manager';
 import type { PairingManager } from '../pairing/manager';
-import { isFocusUnknown, type FocusRead, type FocusReport, type Foreground, type ScreenService, type Unavailable } from '../screen/service';
+import { isFocusUnknown, type CaptureOptions, type FocusRead, type FocusReport, type Foreground, type ScreenService, type Unavailable } from '../screen/service';
 import { PLUGIN_NAME } from '../settings';
 import { ACTION_KEYS, KEY_ACTIONS, KEYS, type KeyAction } from '../bridge/protocol';
 import { ApiError, badRequest } from './errors';
@@ -59,6 +59,20 @@ function wantsFocus(body: Body): boolean {
 /** `movedSince`: the action was meant to move the focus, so an older focus is not the answer. */
 async function withFocus(deps: RouteDeps, device: Device, wanted: boolean, movedSince?: number): Promise<{ focus?: FocusReport }> {
   return wanted ? { focus: await deps.screen.report(device, { settle: true, movedSince }) } : {};
+}
+
+const MAX_WIDTH = { min: 160, max: 3840 };
+
+function screenshotOptions(body: Body): CaptureOptions {
+  const hint = `Pass a width from ${MAX_WIDTH.min} to ${MAX_WIDTH.max}, e.g. agent-atv screenshot --max-width 1280 --jpeg`;
+  let maxWidth: number | undefined;
+  try {
+    maxWidth = optionalInteger(body, 'maxWidth', MAX_WIDTH.min, MAX_WIDTH.max);
+  } catch (error) {
+    throw new ApiError('BAD_REQUEST', (error as ApiError).message, { field: 'maxWidth' }, { hint });
+  }
+  const format = body.format === undefined || body.format === null ? undefined : oneOf(body.format, ['png', 'jpeg'] as const, 'format');
+  return { ...(maxWidth === undefined ? {} : { maxWidth }), ...(format === undefined ? {} : { format }) };
 }
 
 interface Press {
@@ -471,10 +485,11 @@ export function buildRoutes(deps: RouteDeps): Route[] {
       handler: async ({ params, body }): Promise<RouteResult> => {
         const device = devices.resolve(params.device!);
         const ifNoneMatch = optionalString(body, 'ifNoneMatch');
-        const result = await deps.screen.capture(device, ifNoneMatch);
+        const options = screenshotOptions(body);
+        const result = await deps.screen.capture(device, ifNoneMatch, options);
         if (!result.changed) return { status: 304, headers: { 'X-Agent-ATV-Sha256': result.sha256 } };
         return {
-          binary: { data: result.png, contentType: 'image/png' },
+          binary: { data: result.image, contentType: `image/${result.format}` },
           headers: {
             'X-Agent-ATV-Sha256': result.sha256,
             'X-Agent-ATV-Width': String(result.width),

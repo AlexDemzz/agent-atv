@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import struct
 import zlib
 from typing import Any, Callable, Dict, Optional
 
 from agent_atv_bridge.errors import BridgeError
+
+from .image import options, write_private
 
 FAKE_IDENTIFIER = "FAKE-REMOTEPAIRING-0001"
 FAKE_PIN = "1234"
@@ -21,6 +22,12 @@ def fake_png(width: int = 1920, height: int = 1080) -> bytes:
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IEND", b"")
+
+
+def fake_jpeg(width: int, height: int) -> bytes:
+    """Just the markers that carry the size: SOI, a baseline SOF0 for 3 components, EOI."""
+    sof = struct.pack(">BHHB", 8, height, width, 3) + b"\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+    return b"\xff\xd8" + b"\xff\xc0" + struct.pack(">H", len(sof) + 2) + sof + b"\xff\xd9"
 
 
 class FakeBackend:
@@ -60,11 +67,12 @@ class FakeBackend:
     async def screenshot(self, params: Dict[str, Any]) -> Dict[str, Any]:
         self._require_paired()
         await asyncio.sleep(0)
-        png = fake_png()
-        descriptor = os.open(params["path"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "wb") as out:
-            out.write(png)
-        return {"bytes": len(png)}
+        max_width, fmt = options(params)
+        width = min(1920, max_width or 1920)
+        height = round(1080 * width / 1920)
+        data = fake_jpeg(width, height) if fmt == "jpeg" else fake_png(width, height)
+        write_private(params["path"], data)
+        return {"bytes": len(data)}
 
     async def pair_begin(self, params: Dict[str, Any]) -> Dict[str, Any]:
         self._pairing = True

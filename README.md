@@ -211,7 +211,7 @@ agent-atv snapshot --json
 | --- | --- |
 | `snapshot [--screenshot [path]]` | device, power, app, playback, keyboard, focused element, volume |
 | `state [field]` | one field: `power app playing keyboard volume connection seq` from the cached state, or `focus` |
-| `screenshot [path] [--if-changed]` | PNG of the TV screen |
+| `screenshot [path] [--max-width <px>] [--jpeg] [--if-changed]` | PNG of the TV screen, or a smaller JPEG |
 | `press <key[:action][*n]...>` | remote keys; `back` and `home` are shortcuts |
 | `open <name\|bundle id\|url>` | launch and wait for the foreground (`--no-wait`, `--wait-ms`) |
 | `type <text>` / `fill <text>` / `clear` | append to / replace / empty the focused text field |
@@ -281,7 +281,8 @@ the focus only when it moves, so the plugin says the focus is not known rather t
 after Homebridge starts, after the screen, the app or the playback changed, and after a key that
 moved nothing, until the next move. A 4K screenshot takes
 0.5 s to 10 s on a Pi depending on its size (HDR frames reach 30 MB), so agents use
-`screenshot --if-changed`. DRM-protected video captures black.
+`screenshot --if-changed`, and `--max-width 1280 --jpeg` (about 110 KB) when the full resolution
+isn't needed, which matters most over a slow remote link. DRM-protected video captures black.
 
 ## HTTP API
 
@@ -337,8 +338,8 @@ Routes cover devices and scanning, state, keys, apps and `open`, keyboard text, 
 
 Run `agent-atv doctor`. It checks each link of the chain (CLI config, the API, the token, the Python
 bridge, pairing, the connection to the Apple TV, screen reading) and prints, for anything not ok, what
-to do next. Every CLI error also ends with the fix. The plugin logs to the Homebridge log; set `debug`
-to `true` for one line per API request. If you are stuck, open an
+to do next. Every CLI error also ends with the fix. The plugin logs to the Homebridge log, screen reading
+connection changes included; set `debug` to `true` for one line per API request. If you are stuck, open an
 [issue](https://github.com/AlexDemzz/agent-atv/issues) with the `agent-atv doctor` output.
 
 ## Development

@@ -13,6 +13,7 @@ from agent_atv_bridge.errors import BridgeError
 from agent_atv_bridge.protocol import InvalidRequest, Request, failure, parse_request, serialize, success
 
 from . import SCREEN_PROTOCOL_VERSION, __version__
+from .image import FORMATS
 
 _LOGGER = logging.getLogger("agent_atv_screen.server")
 
@@ -23,7 +24,11 @@ _CHECKS: Dict[str, Dict[str, Callable[[Any], bool]]] = {
     "shutdown": {},
     "focus": {},
     "foreground": {},
-    "screenshot": {"path": lambda v: isinstance(v, str) and os.path.isabs(v)},
+    "screenshot": {
+        "path": lambda v: isinstance(v, str) and os.path.isabs(v),
+        "maxWidth": lambda v: v is None or (type(v) is int and v > 0),
+        "format": lambda v: v is None or v in FORMATS,
+    },
     "pair.begin": {},
     "pair.pin": {"pin": lambda v: isinstance(v, str) and PIN.fullmatch(v) is not None},
     "pair.cancel": {},
