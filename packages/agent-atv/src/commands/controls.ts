@@ -6,7 +6,7 @@ import { formatDuration, formatVolume, type State } from '../output.js';
 import { sendKeys } from './press.js';
 import { fetchState } from './state.js';
 
-/** Above the plugin's power.set timeout: the plugin waits up to about 35 s for the Apple TV to confirm. */
+/** Above the plugin's power.set timeout, which waits for the Apple TV to confirm (DESIGN.md §2.4). */
 const POWER_TIMEOUT_MS = 50_000;
 
 export const power: Command = {

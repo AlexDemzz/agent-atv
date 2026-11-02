@@ -11,7 +11,7 @@ Global flags go before or after the command. Slow commands (`wait`, `open`, `sca
 
 | command | own flags | prints |
 | --- | --- | --- |
-| `snapshot` | `--screenshot [path]`, `--no-focus` | the snapshot block; with `--screenshot`, also `Screenshot: <path> (<w>x<h>)` or `Screenshot: unavailable, <reason>: <what to do>`, exit 0 either way |
+| `snapshot` | `--screenshot [path]` (with `--max-width <px>` and `--jpeg` as for `screenshot`), `--no-focus` | the snapshot block; with `--screenshot`, also `Screenshot: <path> (<w>x<h>)` or `Screenshot: unavailable, <reason>: <what to do>`, exit 0 either way |
 | `state [field]` | | one line per field, below. Without a field, the snapshot block from the cache, without `App:` and `Focus:` |
 | `screenshot [path]` | `--max-width <px>` (160-3840, never scales up), `--jpeg`, `--if-changed` | `<path> (3840x2160, 2.1s)`, or `unchanged <previous path>` |
 | `apps` | `--filter <substr>`, `--refresh` | `<bundle id>  <name>` per line, sorted by name |
@@ -51,7 +51,7 @@ The default screenshot path is `<tmpdir>/agent-atv/screenshot-<device id>-<YYYYM
 | `back`, `home` | same as `press` | `pressed menu`, `pressed home` |
 | `open <target>` | `--wait-ms <ms>` (default 15000, max 60000), `--no-wait`, `--settle` | `opened Netflix (com.netflix.Netflix)`, or `launched <target>`, or `launched <bundle id> (not in foreground after 15000ms)`, or `launched <bundle id> (foreground app not known, <reason>: <what to do>)` without waiting (exit 0) |
 | `type <text>`, `fill <text>`, `clear` | `--settle` | `keyboard: "<text now in the field>"` |
-| `power [on\|off\|toggle]` | | `power: on`, once the Apple TV confirms it (up to about 30 s) |
+| `power [on\|off\|toggle]` | | `power: on`, once the Apple TV confirms it (up to about 34 s) |
 | `volume [level\|up\|down]` | `--step <n>` (1-50) with `up`/`down` | `volume: 40` |
 | `seek <90\|+30\|-10\|12:33\|1:02:03>` | | `position: 12:33` |
 

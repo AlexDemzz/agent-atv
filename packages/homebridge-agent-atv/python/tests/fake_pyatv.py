@@ -702,6 +702,8 @@ class FakePyatv:
         self.fake_pin = 1234
         self.fake_pair_begin_error: Optional[BaseException] = None
         self.fake_playing_error_on_connect: Optional[BaseException] = None
+        # False imitates a pyatv whose private Companion power hook moved.
+        self.fake_companion_hook = True
 
     async def scan(self, loop: asyncio.AbstractEventLoop, timeout: int = 5, identifier: Any = None,
                    protocol: Any = None, hosts: Optional[List[str]] = None) -> List[FakeConfig]:
@@ -717,6 +719,8 @@ class FakePyatv:
         if self.fake_connect_error is not None:
             raise self.fake_connect_error
         atv = FakeAppleTV(config)
+        if not self.fake_companion_hook:
+            del atv.power._interfaces
         if self.fake_playing_error_on_connect is not None:
             atv.metadata.fake_errors["playing"] = self.fake_playing_error_on_connect
         self.fake_connected.append(atv)

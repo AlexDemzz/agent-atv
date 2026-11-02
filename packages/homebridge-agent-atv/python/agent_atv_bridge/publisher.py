@@ -26,7 +26,7 @@ class Timings:
     power_off_wait_s: float = 10.0
     # Companion's own request timeout is 5 s; this lets it answer first.
     probe_timeout_s: float = 6.0
-    probe_s: float = 60.0
+    probe_interval_s: float = 60.0
     probe_grace_s: float = 3.0
 
 

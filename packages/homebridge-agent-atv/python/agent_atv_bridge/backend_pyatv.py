@@ -88,6 +88,7 @@ class _Connection:
         self.tasks: set = set()
         self.power_changed = asyncio.Event()
         self.probe_supported = True
+        self._companion: Any = None
         self.power_commands = 0
         self.power_commands_started = 0
         self._session_check: Optional[asyncio.Task] = None
@@ -116,9 +117,11 @@ class _Connection:
         session is dropped (and the plugin reconnects) when the answer is missing or disagrees.
         A result for which `current()` turned false, a power command having overtaken it, is ignored.
         """
+        if not self.probe_supported:
+            return None
         timeout_s = self._timings.probe_timeout_s
         try:
-            probed = await asyncio.wait_for(_attention_power(self.atv, self._const), timeout_s)
+            probed = await asyncio.wait_for(_attention_power(self._companion), timeout_s)
         except Exception as exc:
             if _refused(exc, self._exceptions):
                 if self.probe_supported:
@@ -138,7 +141,7 @@ class _Connection:
 
     async def _check_session_periodically(self) -> None:
         while self.probe_supported:
-            await asyncio.sleep(self._timings.probe_s)
+            await asyncio.sleep(self._timings.probe_interval_s)
             if self.power_commands:
                 continue
             commands_before = self.power_commands_started
@@ -200,6 +203,15 @@ class _Connection:
         if keyboard_focus(self.atv) == "focused":
             await self.refresh_keyboard()
         self.publisher.start()
+        try:
+            self._companion = _companion_api(self.atv, self._const)
+        except (AttributeError, KeyError) as exc:
+            _LOGGER.warning(
+                "%s: cannot check the session for missed updates (this pyatv has no Companion power API: %r); "
+                "update homebridge-agent-atv", self.device, exc,
+            )
+            self.probe_supported = False
+            return
         self._session_check = asyncio.ensure_future(self._check_session_periodically())
 
     async def close(self) -> None:
@@ -433,6 +445,9 @@ class PyatvBackend:
                     f"{connection.summary['name']} still reports power {current} {wait_s:g} s after power {target}",
                     {"requested": target, "power": current},
                 )
+            if self._connections.get(connection.device) is not connection:
+                # The probe dropped the stale session; the reconnect publishes the state.
+                return {"power": target}
         connection.publisher.notify()
         return {"power": target}
 
@@ -487,20 +502,22 @@ class PyatvBackend:
             await self._connections.pop(device).close()
 
 
-async def _attention_power(atv: Any, const: Any) -> str:
-    """Companion FetchAttentionState, which pyatv 0.18 only exposes on its private Companion power object."""
-    companion = atv.power._interfaces[const.Protocol.Companion]
-    status = await companion.api.fetch_attention_state()
+def _companion_api(atv: Any, const: Any) -> Any:
+    """pyatv 0.18 only exposes Companion FetchAttentionState on its private Companion power object."""
+    return atv.power._interfaces[const.Protocol.Companion].api
+
+
+async def _attention_power(companion: Any) -> str:
+    status = await companion.fetch_attention_state()
     if status.name == "Asleep":
         return "off"
     return "on" if status.name in ("Awake", "Idle", "Screensaver") else "unknown"
 
 
 def _refused(exc: BaseException, exceptions: Any) -> bool:
-    """The Apple TV answered without a state (pyatv raises ProtocolError without a cause), or pyatv lacks the hook."""
+    """The Apple TV answered without a state: pyatv raises ProtocolError without a cause."""
     protocol_error = exception_classes(exceptions, "ProtocolError")
-    answered = bool(protocol_error) and isinstance(exc, protocol_error) and exc.__cause__ is None
-    return answered or isinstance(exc, (AttributeError, KeyError))
+    return bool(protocol_error) and isinstance(exc, protocol_error) and exc.__cause__ is None
 
 
 def _is_timeout(exc: BaseException) -> bool:

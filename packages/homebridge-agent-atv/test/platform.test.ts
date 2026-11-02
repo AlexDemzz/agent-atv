@@ -200,10 +200,25 @@ describe('Homebridge platform (P3)', () => {
     expect(bridge.calls('power.set')).toEqual([{ device: DEVICE_ID, on: false }]);
 
     bridge.handle('power.set', () => {
-      throw new BridgeFailure('POWER_NOT_CONFIRMED', 'Living Room still reports power on');
+      throw new BridgeFailure('POWER_NOT_CONFIRMED', 'Living Room still reports power on', { requested: 'off', power: 'on' });
     });
     await char(television, C.Active).handleSetRequest(C.Active.INACTIVE);
-    await eventually(() => log.at('warn').some((line) => line.includes('Living Room still reports power on')));
+    await eventually(() =>
+      log.at('warn').some((line) => line.includes('Living Room still reports power on') && line.includes('Run agent-atv power off again')),
+    );
+  });
+
+  it('refuses an Active write while the Apple TV is not connected, without sending it', async () => {
+    const { api, bridge, log } = await boot();
+    const television = service(await publishedTv(api), S.Television);
+    bridge.handle('connect', () => NO_RESPONSE);
+    bridge.event('connection', DEVICE_ID, { reason: 'stale_session' });
+    await eventually(() => log.at('warn').some((line) => line.includes('connection lost')));
+
+    await expect(char(television, C.Active).handleSetRequest(C.Active.INACTIVE)).rejects.toBeDefined();
+
+    expect(bridge.calls('power.set')).toEqual([]);
+    expect(log.at('warn').some((line) => line.includes('Living Room is not connected'))).toBe(true);
   });
 
   it('answers onGet from the cache without waiting for the bridge', async () => {

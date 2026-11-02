@@ -13,7 +13,7 @@ from tests.in_process_bridge import InProcessBridge
 
 DEVICE = "A1B2C3D4E5F6"
 FAST = Timings(debounce_s=0.02, poll_s=0.05, position_only_s=0.4, pairing_ttl_s=0.2, call_timeout_s=0.3,
-               power_on_wait_s=0.4, power_off_wait_s=0.3, probe_timeout_s=0.2, probe_s=60, probe_grace_s=0.1)
+               power_on_wait_s=0.4, power_off_wait_s=0.3, probe_timeout_s=0.2, probe_interval_s=60, probe_grace_s=0.1)
 
 
 async def until(condition, timeout: float = 1.0) -> None:
@@ -506,7 +506,7 @@ class PowerTest(PoweredTestCase):
 
 
 class SessionCheckTest(PoweredTestCase):
-    TIMINGS = dataclasses.replace(FAST, probe_s=0.1)
+    TIMINGS = dataclasses.replace(FAST, probe_interval_s=0.1)
 
     def fetches(self) -> int:
         return len(self.power.fake_companion.fake_calls)
@@ -543,6 +543,11 @@ class SessionCheckTest(PoweredTestCase):
         self.assertEqual(event["data"]["reason"], "stale_session")
         self.assertIn("FetchAttentionState failed", event["data"]["message"])
 
+    async def test_an_unexpected_error_during_the_question_drops_the_session(self) -> None:
+        self.power.fake_companion.fake_errors["fetch_attention_state"] = AttributeError("'NoneType' object has no attribute 'send'")
+        event = await self.bridge.next_event("connection")
+        self.assertEqual(event["data"]["reason"], "stale_session")
+
     async def test_an_apple_tv_that_refuses_the_question_is_not_asked_again(self) -> None:
         self.power.fake_companion.fake_errors["fetch_attention_state"] = fp.ProtocolError("Command failed: No request handler")
         await until(lambda: self.fetches() >= 1)
@@ -568,6 +573,22 @@ class SessionCheckTest(PoweredTestCase):
         self.assertTrue((await self.bridge.response(request))["ok"])
         gate.set()
         await asyncio.sleep(0.25)
+        self.assertEqual(self.bridge.events("connection"), [])
+
+
+class MissingCompanionHookTest(ConnectedTestCase):
+    TIMINGS = dataclasses.replace(FAST, probe_interval_s=0.1)
+
+    async def test_a_pyatv_without_the_hook_is_reported_at_connect_and_never_checks(self) -> None:
+        self.pyatv.fake_companion_hook = False
+        with self.assertLogs("agent_atv_bridge.pyatv", "WARNING") as logs:
+            await self.connect()
+        self.assertIn("cannot check the session for missed updates", "\n".join(logs.output))
+        self.pyatv.fake_atv.power.fake_state = fp.PowerState.Off
+        self.bridge.mark_events_seen()
+        error = await self.bridge.error("power.set", {"device": DEVICE, "on": True})
+        self.assertEqual(error["code"], "POWER_NOT_CONFIRMED")
+        await asyncio.sleep(0.3)
         self.assertEqual(self.bridge.events("connection"), [])
 
 
