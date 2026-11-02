@@ -1181,13 +1181,15 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   worker process per Apple TV, separate from the pyatv bridge.
 - **Inbound queue**: the tunnel hands each packet from the Apple TV (16 KB, MTU 16000) to PyTCP
   through a non-blocking datagram socketpair. pymobiledevice3 asks for 6 MiB buffers, but without
-  root Linux caps them at `net.core.wmem_max` (212992 on a Pi, about 26 packets), and
-  `UserspaceTun.write` drops whatever does not fit. A screenshot burst then lost about 40 packets,
+  root Linux caps them at `net.core.wmem_max` (212992 on a Pi, which the kernel doubles: about
+  416 KiB, 26 packets), and `UserspaceTun.write` drops whatever does not fit. A screenshot burst then lost about 40 packets,
   which cost 200 to 470 retransmitted segments and RTO stalls of 240 to 600 ms. The worker replaces
-  `UserspaceTun.write` (and `close`, to drop the queue first) with one that queues what does not fit
-  and sends it in order from `loop.add_writer` once the socket is writable; past 512 queued packets
-  (8 MiB) it drops the newest, which TCP recovers. A capture queued at most 89. W2 pins the source of
-  the stock `write` it reimplements. Raising `wmem_max` needs root and stalled on a zero window;
+  `UserspaceTun.write` with one that queues what does not fit and sends it in order from
+  `loop.add_writer` once the socket is writable; past 512 queued packets (8 MiB) it drops the newest,
+  which TCP recovers. A capture queued at most 89. Like the stock `write`, a packet the socket refuses
+  for another reason (e.g. `EMSGSIZE`) is dropped alone. `close` drops the queue first, and nothing is
+  queued once the stock `close` has set `_closed`, before it awaits the stack's stop: no writer
+  outlives the socketpair. W2 pins the source of the stock `write` and `close`. Raising `wmem_max` needs root and stalled on a zero window;
   uvloop also avoided the drops in 5 captures, for a reason not understood, so it is not used.
 - **Focused element**: the accessibility daemon has no call that returns the tvOS focus.
   `deviceFetchSpecialElement:` gives the first (0) and the last (1) element of the screen, whatever has
@@ -1252,12 +1254,12 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   re-encodes the PNG with Pillow (a pymobiledevice3 dependency, also listed in `requirements-screen.txt`)
   on a thread, off the event loop: `thumbnail` to `maxWidth` keeping the aspect ratio and never
   scaling up, JPEG at Pillow's default quality. A PNG already no wider than `maxWidth` is written as
-  captured. Measured on a Pi 4 (tvOS 27.2): the Apple TV takes about 1 to 1.3 s to render and encode
-  the PNG before its first byte; with the inbound queue (above) the rest crosses the tunnel at about
-  8 MB/s (2 to 3 MB/s without it), so through the API a 20 to 29 MB home-screen PNG takes 4.1 to
-  5.5 s (8 to 15 s without the queue) and a 13 to 16 MB static Settings PNG 3.1 to 4.1 s (8.2 to
-  9.7 s); opening DVT and its channel takes about 0.15 s; a 1280-wide JPEG (85 to 165 KB) takes about
-  0.5 to 1 s more and shrinks only the HTTP answer, not the capture.
+  captured. Measured end to end through the plugin's API (`X-Agent-ATV-Duration-Ms`) on a Pi 4
+  against tvOS 27.2: a full home-screen PNG (20 to 29 MB) takes 4.1 to 5.5 s (8.0 to 15.3 s in 0.1.1,
+  before the inbound queue) and its 1280-wide JPEG 4.1 to 6.6 s; a static Settings PNG 3.4 to 4.1 s
+  (8.2 to 9.7 s in 0.1.1) and its JPEG 4.2 to 4.6 s. The JPEG shrinks only the HTTP answer, not the
+  capture. The research note `apple-tv-screenshot-speed.md` holds the raw device numbers (render time
+  before the first byte, tunnel throughput, drops and retransmissions).
 - **Pairing**: `bonjour.browse_remotepairing_manual_pairing()` (advertised while the Apple TV shows
   *Settings > Remotes and Devices > Remote App and Devices*, the screen of the pyatv PINs), the answer
   whose addresses include the device address (else the only answer; its IPv4 address preferred), then
@@ -1272,8 +1274,8 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
 
 Measured on a Raspberry Pi (Debian 12, Python 3.11) against an Apple TV 4K on tvOS 27.2, without
 root: imports about 2.5 s; tunnel up 1.4–3.5 s warm (5.9–7.6 s right after an Apple TV reboot); focus
-event about 50 ms after a key press, then about 0.2 s per read; screenshot 0.5–0.65 s for a home-screen PNG, 8–11 s for an
-18–20 MB HDR frame of the aerial screensaver (about 5 s with the inbound queue); worker RSS 100–135 MB.
+event about 50 ms after a key press, then about 0.2 s per read; screenshot 3.4–6.6 s through the API
+(Screenshot, above); worker RSS 100–135 MB.
 
 ### 6.2 Screen worker (`python -m agent_atv_screen`)
 
@@ -1444,8 +1446,8 @@ interface where behaviour is observed; fakes sit at the outermost boundary only.
 
 - **B1. Bridge stdio, fake backend**: spawn `python3 -m agent_atv_bridge --fake`, write request lines, read response/event lines. Catches framing, `ready`, dispatch, validation and error codes, and the fake Apple TV semantics (§2.8) the plugin's contract test relies on; misses everything pyatv does.
 - **B2. Bridge protocol with pyatv faked at its boundary**: in-process `serve(PyatvBackend(tests/fake_pyatv), reader, writer)`; the test sends JSON lines and fires the fake's listener callbacks. Catches the key → pyatv call table, InputAction mapping, pyatv exception → error code mapping, State building, push/poll event emission and debounce, `power.set` waiting for the confirmed state and its session check on timeout (`POWER_NOT_CONFIRMED`, a stale session dropped), the periodic session check (kept, dropped on a missing or disagreeing answer, the grace for a late push, stopped when refused, never racing a `power.set`), pairing handler lifecycle and 90 s expiry, per-device action serialization; misses real pyatv/tvOS behaviour and API drift (B3).
-- **W1. Screen worker with pymobiledevice3 faked at its boundary**: in-process `serve(Pmd3Backend(fake_pmd3 namespace), reader, writer)` (`tests/test_screen_worker.py`, the B2 harness), plus `python -m agent_atv_screen --fake` over stdio. `tests/fake_pmd3.py` stands in for the provider/RSD (`UserspaceRsdTunnel`, `get_remote_pairing_tunnel_services`, `create_core_device_tunnel_service_using_remotepairing`), `AccessibilityAudit` (as the daemon behaves on tvOS: focus events and UIAccessibility notifications only for the last targeted session with monitored type 2, untargeted by the end of any session, which a tunnel closed too soon after the close delays, and once lost sessions are disposed of, focus moves only after the type is set again, a highlight on each focused element, daemon state that outlives sessions, special elements that are the first and last element), `DvtProvider`/`Screenshot`, `DeviceInfo.proclist()` (processes with the tvOS 27.2 fields, `show()` sets which run in the foreground), the manual-pairing browse and `RemotePairingManualPairingService` (which calls a bare `input()` like the real one). Catches the Wi-Fi provider swap and address choice, the inbound packet queue (a burst past the socketpair buffer arrives whole and in order, the newest dropped past the bound), record migration (and refusing another Apple TV's record), reconnect and retry, the focus read (followed from the tunnel's start, `FOCUS_UNKNOWN` before a move, after a screen change notification, after a layout change until the daemon confirms the same element, and for an empty or element-less move, `ageMs` from the request's arrival, the highlight cleared after every move, unknown again when another inspector changes the type, the daemon reset on shutdown, a next worker, or the session after a lost tunnel, still followed once the Apple TV disposes of lost sessions, with the focus unknown until the next move, no special elements or cursor moves, one session per tunnel), the DTX buffer raise, the foreground classification (home, an app by its display name, the launch overlap, the screensaver, several apps, only the shell), screenshot files and serialization, `maxWidth`/`format` (JPEG and PNG scaled down, never up, validation; the Pillow cases skipped without Pillow), INFO logs (a failing follow logged once, the late retarget), the threaded PIN pairing and a late confirmation, the status events and the fake backend; misses real pymobiledevice3, PyTCP and tvOS behaviour (checked by hand on a Pi, §6.1).
-- **W2. pymobiledevice3 surface check**: runs only when pymobiledevice3 is importable (`requirements-screen.txt`); asserts every name in `fake_pmd3.IMITATES` exists with compatible signatures and coroutine-ness, that the objects handed back expose what the worker reads, that `_create_no_root_tunnel_provider` and `input` are still looked up at call time, and that `UserspaceTun.write` is still the source the inbound queue reimplements (pinned digest). Catches the fake drifting from the pinned version; misses runtime behaviour.
+- **W1. Screen worker with pymobiledevice3 faked at its boundary**: in-process `serve(Pmd3Backend(fake_pmd3 namespace), reader, writer)` (`tests/test_screen_worker.py`, the B2 harness), plus `python -m agent_atv_screen --fake` over stdio. `tests/fake_pmd3.py` stands in for the provider/RSD (`UserspaceRsdTunnel`, `get_remote_pairing_tunnel_services`, `create_core_device_tunnel_service_using_remotepairing`), `AccessibilityAudit` (as the daemon behaves on tvOS: focus events and UIAccessibility notifications only for the last targeted session with monitored type 2, untargeted by the end of any session, which a tunnel closed too soon after the close delays, and once lost sessions are disposed of, focus moves only after the type is set again, a highlight on each focused element, daemon state that outlives sessions, special elements that are the first and last element), `DvtProvider`/`Screenshot`, `DeviceInfo.proclist()` (processes with the tvOS 27.2 fields, `show()` sets which run in the foreground), the manual-pairing browse and `RemotePairingManualPairingService` (which calls a bare `input()` like the real one). Catches the Wi-Fi provider swap and address choice, the inbound packet queue (installed by the worker; a burst past the socketpair buffer arrives whole and in order, the newest dropped past the bound, a packet the socket refuses dropped alone, no writer left on the socket by packets arriving during close), record migration (and refusing another Apple TV's record), reconnect and retry, the focus read (followed from the tunnel's start, `FOCUS_UNKNOWN` before a move, after a screen change notification, after a layout change until the daemon confirms the same element, and for an empty or element-less move, `ageMs` from the request's arrival, the highlight cleared after every move, unknown again when another inspector changes the type, the daemon reset on shutdown, a next worker, or the session after a lost tunnel, still followed once the Apple TV disposes of lost sessions, with the focus unknown until the next move, no special elements or cursor moves, one session per tunnel), the DTX buffer raise, the foreground classification (home, an app by its display name, the launch overlap, the screensaver, several apps, only the shell), screenshot files and serialization, `maxWidth`/`format` (JPEG and PNG scaled down, never up, validation; the Pillow cases skipped without Pillow), INFO logs (a failing follow logged once, the late retarget), the threaded PIN pairing and a late confirmation, the status events and the fake backend; misses real pymobiledevice3, PyTCP and tvOS behaviour (checked by hand on a Pi, §6.1).
+- **W2. pymobiledevice3 surface check**: runs only when pymobiledevice3 is importable (`requirements-screen.txt`); asserts every name in `fake_pmd3.IMITATES` exists with compatible signatures and coroutine-ness, that the objects handed back expose what the worker reads, that `_create_no_root_tunnel_provider` and `input` are still looked up at call time, that `UserspaceTun.write` and `close` are still the sources the inbound queue relies on (pinned digests), and that the tunnel's socketpair is a datagram one. Catches the fake drifting from the pinned version; misses runtime behaviour.
 - **B3. pyatv surface check**: runs only when `pyatv` is importable (venv or CI with `requirements.txt`); asserts every function, attribute, enum member and keyword argument `fake_pyatv` imitates exists in the installed pyatv 0.18, and the private Companion path the session check reaches (`_interfaces`, `.api.fetch_attention_state()`, `SystemStatus`). Catches the fake drifting from the pinned pyatv; misses runtime behaviour.
 
 ### Homebridge plugin (`test/`, vitest)
@@ -1494,7 +1496,7 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
    Netflix menus, Settings, Control Center and the screensaver; not checked: Siri, Picture in Picture,
    AirPlay receive. pyatv `metadata.app` stays as `nowPlaying` only: it keeps the last app that played.
 3. **Screen reading** relies on private pymobiledevice3 hooks (`_create_no_root_tunnel_provider`,
-   `AccessibilityAudit._invoke`, the `input()` PIN prompt, `UserspaceTun.write` and its socketpair), pinned to 11.49.1 and checked by W2, and on
+   `AccessibilityAudit._invoke`, the `input()` PIN prompt, `UserspaceTun.write`, `close` and their socketpair), pinned to 11.49.1 and checked by W2, and on
    undocumented device data: the `foregroundRunning` flag of DVT `runningProcesses` and the tvOS
    system bundle ids it is read against (`com.apple.PineBoard`, `com.apple.TVSystemUIService`,
    `com.apple.HeadBoard`, `com.apple.IdleScreen`).
@@ -1509,7 +1511,7 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
    unmeasured in apps: whether, after a move that sent no event, the daemon confirms the previous
    element after a layout change; a plain read would then show it, while `--settle` still rejects it
    as older than the keys. Each move flashes the daemon's highlight for one round trip.
-   Screenshots of HDR content are 18–33 MB and take about 4 to 6 s on a Pi; `maxWidth` and
+   4K screenshots reach about 33 MB and take several seconds on a Pi (§6.1); `maxWidth` and
    `format: "jpeg"` (Pillow, §6.1) shrink what crosses the network, not the capture itself. The persistent tunnel's effect on the Apple TV's sleep is unmeasured.
 4. **The RemotePairing PIN length** isn't documented by Apple; the API accepts 4 to 8 digits for that
    step.
