@@ -160,7 +160,8 @@ agent-atv/
   reaches pyatv only through the module object it is given (`pyatv_module.scan`, `.connect`, `.pair`,
   `.const`, `.exceptions`); `__main__` passes `import pyatv`. `timings` defaults to the contract values
   (100 ms debounce, 1 s poll, 5 s position throttle, 90 s pairing expiry) plus the bridge's own pyatv
-  timeouts (8 s per call, 25 s for connect and pairing); B2 tests pass shorter ones.
+  timeouts (8 s per call, 25 s for connect and pairing), the `power.set` waits (20 s for on, 10 s for off)
+  and the session check (every 60 s, 6 s to answer, 3 s grace, §2.3); B2 tests pass shorter ones.
 
 ### 2.2 Messages
 
@@ -196,13 +197,27 @@ Event (no `id`):
 | --- | --- | --- | --- |
 | `ready` | absent | `{"protocolVersion": 1, "bridgeVersion": "0.1.0", "python": "3.11.2", "pyatv": "0.18.0" \| null, "backend": "pyatv" \| "fake"}` | once, first line, before any response |
 | `state` | id | State (§2.5) | after `connect` succeeds, then whenever any State field changes (debounce 100 ms) |
-| `connection` | id | `{"status": "disconnected", "reason": "connection_lost" \| "connection_closed", "message": "..."}` | the device connection dropped. The bridge forgets the device; the plugin reconnects |
+| `connection` | id | `{"status": "disconnected", "reason": "connection_lost" \| "connection_closed" \| "stale_session", "message": "..."}` | the device connection dropped, or the bridge dropped a stale session (below). The bridge forgets the device; the plugin reconnects |
 
 Change detection: pyatv push listeners `push_updater.listener` (`playstatus_update`,
 `playstatus_error`), `power.listener` (`powerstate_update`), `audio.listener` (`volume_update`),
 `keyboard.listener` (`focusstate_update`) and `listener` (`connection_lost`, `connection_closed`).
 The bridge ALSO recomputes State every 1000 ms and emits it if it differs, because `metadata.app`
 (`nowPlaying`) has no listener. A change in `playing.position` alone is emitted at most once every 5000 ms.
+
+Session check: pyatv can keep a session whose pushed updates have stopped for hours while its sockets
+stay up and commands still work (no Companion heartbeat; `connection_lost` never fires), so the cached
+power stays `on` while the Apple TV sleeps. Every 60 s the bridge asks the Apple TV for its power with
+Companion `FetchAttentionState` (pyatv 0.18 exposes it only on its private Companion power object:
+`atv.power._interfaces[Protocol.Companion].api.fetch_attention_state()`, checked by B3), 6 s to answer.
+On tvOS 27.2 it answers in about 10 ms, asleep or awake.
+`Asleep` is `off`; `Awake`, `Idle` and `Screensaver` are `on`; anything else tells nothing. No answer, a
+failed request, or an answer that still disagrees with `power.power_state` 3 s later (a push may be on
+its way) makes the session stale: the bridge logs a warning with the reason and drops it as
+`reason: "stale_session"`, and the plugin reconnects (§5.1). No check starts while a `power.set` runs,
+and one that a `power.set` overtook is ignored. An error the Apple TV answered with (pyatv's
+`ProtocolError` without a cause, e.g. `No request handler`) logs one warning and ends the checks for that
+connection; `power.set` still works without them.
 
 When keyboard focus becomes `focused`, and after each `keyboard.*` call, the bridge refreshes
 `keyboard.text` with `text_get()`. When focus is not `focused`, `text` is `null`.
@@ -226,7 +241,7 @@ enforces its own pyatv timeouts and reports `DEVICE_TIMEOUT`.
 | `key` | `{"device", "key", "action"?: "tap"\|"double"\|"hold"}` | `{}` | 10 s |
 | `apps.list` | `{"device"}` | `{"apps": [{"bundleId", "name"}]}`, sorted by name (case-insensitive) | 15 s |
 | `app.launch` | `{"device", "target"}`, target = bundle id or URL | `{}` | 15 s |
-| `power.set` | `{"device", "on": boolean}` | `{"power": "on"\|"off"\|"unknown"}` | 15 s |
+| `power.set` | `{"device", "on": boolean}` | `{"power": "on"\|"off"}`, the confirmed new state | 45 s |
 | `volume.set` | `{"device", "level": 0..100}` | `{"volume": number\|null}` | 10 s |
 | `seek` | `{"device", "position": integer seconds ≥ 0}` | `{}` | 10 s |
 | `keyboard.get` | `{"device"}` | `{"focus", "text"}` | 10 s |
@@ -261,7 +276,15 @@ Semantics:
   `details.field = "action"`.
 - `app.launch`: `atv.apps.launch_app(target)`; a pyatv exception becomes `LAUNCH_FAILED`, except a
   timeout, which stays `DEVICE_TIMEOUT`.
-- `power.set`: `turn_on()` / `turn_off()` with `await_new_state=False`, then return current power.
+- `power.set`: `turn_on()` / `turn_off()` with `await_new_state=False` (Companion raises
+  `NotImplementedError` for `True`), then wait for `power.power_state` to reach the requested state, up
+  to 20 s for on and 10 s for off (measured on tvOS 27.2: the pushed state flips 6 to 7.5 s after on,
+  within 1.5 s after off), and return it. Already in that state: returns at once. On timeout, one
+  session check (§2.3, without the grace): when the Apple TV answers the requested state, the session
+  was stale, so it is dropped and the requested state returned; otherwise `POWER_NOT_CONFIRMED` (a
+  failed check drops the session too). Worst case about 34 s (8 s call, 20 s wait, 6 s check). A wake
+  sent within about 5 s of a sleep is ignored by the Apple TV and ends in `POWER_NOT_CONFIRMED`; sending
+  it again works.
 - `volume.set`: `audio.set_volume(level)`.
 - `seek`: `remote_control.set_position(position)`.
 - `keyboard.set|append|clear`: if `keyboard.text_focus_state != Focused`, return
@@ -373,6 +396,7 @@ A deterministic in-memory Apple TV for tests and development. It must not import
 | `KEYBOARD_NOT_FOCUSED` | keyboard op while no text field is focused | |
 | `LAUNCH_FAILED` | `launch_app` raised | `target` |
 | `DEVICE_OFF` | fake backend only, §2.8 | |
+| `POWER_NOT_CONFIRMED` | `power.set` saw no change within its wait, and the session check didn't report the requested state (§2.4) | `requested` (`on`\|`off`), `power` (the session's power) |
 | `NOT_SUPPORTED` | `NotSupportedError`, or `FeatureState.Unsupported` | `feature` |
 | `DEVICE_TIMEOUT` | `asyncio.TimeoutError` or `OperationTimeoutError` | |
 | `DEVICE_ERROR` | any other pyatv exception | `exception` (class name) |
@@ -459,6 +483,7 @@ is one (`run agent-atv pair A1B2C3D4E5F6 --screen`). An agent must be able to ac
 | `SCREEN_NOT_PAIRED` | 503 | no RemotePairing record for the device; hint `run agent-atv pair <id> --screen` |
 | `SCREEN_UNAVAILABLE` | 503 | screen venv still installing, worker restarting, or no tunnel to the Apple TV; `details.tunnel?` |
 | `DEVICE_TIMEOUT` | 504 | |
+| `POWER_NOT_CONFIRMED` | 504 | hint `Run agent-atv power <requested> again, then check with: agent-atv wait --power <requested>` |
 | `BRIDGE_TIMEOUT` | 504 | the plugin-side request timeout fired |
 
 Bridge codes pass through unchanged with the status from this table plus a `hint`.
@@ -497,7 +522,7 @@ the cached State at response time (no settle delay).
 | `POST /devices/:device/open` | `{"target": "com.netflix.Netflix" \| "Netflix" \| "https://…", "waitMs"?: 15000, "focus"?: false}` | `{"ok": true, "app": {"bundleId", "name"} \| null, "foreground": boolean \| null, "foregroundUnknown"?: {"code", "reason", "hint"}, "focus"?: FocusReport, "state"}` |
 | `GET /devices/:device/keyboard` | | `{"focus", "text"}` |
 | `POST /devices/:device/keyboard` | `{"op": "set"\|"append"\|"clear", "text"?: string, "focus"?: false}` | `{"ok": true, "keyboard": {"focus", "text"}, "focus"?: FocusReport, "state"}` |
-| `POST /devices/:device/power` | `{"on": boolean}` | `{"ok": true, "power", "state"}` |
+| `POST /devices/:device/power` | `{"on": boolean}` | `{"ok": true, "power", "state"}`, once the Apple TV confirmed the new `power` (§2.4) |
 | `POST /devices/:device/volume` | `{"level": 0..100}` | `{"ok": true, "volume", "state"}` |
 | `POST /devices/:device/seek` | `{"position": seconds}` | `{"ok": true, "state"}` |
 | `POST /devices/:device/wait` | §3.6 | `{"ok": true, "matched": [names], "elapsedMs", "app"?: Foreground, "focus"?: FocusElement, "state"}` |
@@ -590,7 +615,7 @@ global `fetch`. Every command talks to the API in §3.
 | `--token <t>` | `AGENT_ATV_TOKEN` | discouraged on the command line (shell history); prefer env or config |
 | `-d, --device <id\|name>` | `AGENT_ATV_DEVICE` | default `default` (§3.2) |
 | `--json` | | machine-readable output (§4.3) |
-| `--timeout <ms>` | `AGENT_ATV_TIMEOUT_MS` | HTTP timeout, default 30000. For `wait`, the HTTP timeout is the wait's own `--timeout` + 5000; `open` uses at least `waitMs` + 15000, `scan` at least 20000, `screenshot` (and `snapshot --screenshot`) at least 150000, `pair` at least 120000 |
+| `--timeout <ms>` | `AGENT_ATV_TIMEOUT_MS` | HTTP timeout, default 30000. For `wait`, the HTTP timeout is the wait's own `--timeout` + 5000; `open` uses at least `waitMs` + 15000, `scan` at least 20000, `screenshot` (and `snapshot --screenshot`) at least 150000, `pair` at least 120000, `power on\|off\|toggle` at least 50000 |
 | `-h, --help` / `-V, --version` | | |
 
 Global flags may appear before or after the command.
@@ -807,7 +832,7 @@ hint: Current state: paused video "Chapter One". Run agent-atv snapshot to see w
 Text output names the matched conditions as the API does, except `idleMs`, shown as `idle`.
 
 **power [on|off|toggle]**: no argument prints the power state; `toggle` reads then sets the opposite.
-Prints `power: on`.
+Prints `power: on`, the state the Apple TV confirmed (§2.4), so no `wait --power` is needed after it.
 
 **volume [level|up|down]**: no argument prints the volume. `up`/`down` press `volume_up`/`volume_down`,
 `--step n` times. A number sets the level. Prints `volume: 40`.
@@ -955,7 +980,8 @@ uptime). Pending requests fail with `BRIDGE_UNAVAILABLE`. After `ready`, reconne
 device. A request with no response within its timeout (§2.4) fails with `BRIDGE_TIMEOUT`; a late
 response is dropped.
 
-Connection supervision per paired device: `connect`; on error or a `connection` event set
+Connection supervision per paired device: `connect`; on error or a `connection` event (including a
+`stale_session` the bridge's session check dropped, §2.3) set
 `connection: "connecting"` and retry with backoff 2, 4, 8 … 120 s, forever. `AUTH_FAILED` →
 `needsPairing: true`, stop retrying, warn
 `<name>: credentials rejected, pair again in the plugin settings or with: agent-atv pair <id>`.
@@ -1053,7 +1079,9 @@ external; the user adds it in the Home app with the bridge's setup code, which t
 Category `APPLE_TV`, UUID `hap.uuid.generate('agent-atv:' + id)`, created after the first successful
 `connect`.
 - `Television`: `ConfiguredName` = device name, `SleepDiscoveryMode` ALWAYS_DISCOVERABLE, `Active` ↔
-  power (`onSet` → `power.set`), `ActiveIdentifier` ↔ the `nowPlaying` app's input index (`onSet` →
+  power (`onSet` → `power.set`, answered once sent: HomeKit gives up on a write after 10 s and the
+  confirmation takes up to 20 s; a failure logs a warning and `Active` follows the state events),
+  `ActiveIdentifier` ↔ the `nowPlaying` app's input index (`onSet` →
   `app.launch`; 0 when the app isn't an input). The foreground app is read on demand only (§6.3), so
   HomeKit follows the now-playing app, which stays on the last app that played, `RemoteKey`: ARROW_* → arrows, SELECT → `select`,
   BACK → `menu`, EXIT → `home`, PLAY_PAUSE → `play_pause`, INFORMATION → `top_menu`.
@@ -1396,16 +1424,16 @@ interface where behaviour is observed; fakes sit at the outermost boundary only.
 ### Python bridge and screen worker (`python/tests`, `python3 -m unittest`, neither library needed)
 
 - **B1. Bridge stdio, fake backend**: spawn `python3 -m agent_atv_bridge --fake`, write request lines, read response/event lines. Catches framing, `ready`, dispatch, validation and error codes, and the fake Apple TV semantics (§2.8) the plugin's contract test relies on; misses everything pyatv does.
-- **B2. Bridge protocol with pyatv faked at its boundary**: in-process `serve(PyatvBackend(tests/fake_pyatv), reader, writer)`; the test sends JSON lines and fires the fake's listener callbacks. Catches the key → pyatv call table, InputAction mapping, pyatv exception → error code mapping, State building, push/poll event emission and debounce, pairing handler lifecycle and 90 s expiry, per-device action serialization; misses real pyatv/tvOS behaviour and API drift (B3).
+- **B2. Bridge protocol with pyatv faked at its boundary**: in-process `serve(PyatvBackend(tests/fake_pyatv), reader, writer)`; the test sends JSON lines and fires the fake's listener callbacks. Catches the key → pyatv call table, InputAction mapping, pyatv exception → error code mapping, State building, push/poll event emission and debounce, `power.set` waiting for the confirmed state and its session check on timeout (`POWER_NOT_CONFIRMED`, a stale session dropped), the periodic session check (kept, dropped on a missing or disagreeing answer, the grace for a late push, stopped when refused, never racing a `power.set`), pairing handler lifecycle and 90 s expiry, per-device action serialization; misses real pyatv/tvOS behaviour and API drift (B3).
 - **W1. Screen worker with pymobiledevice3 faked at its boundary**: in-process `serve(Pmd3Backend(fake_pmd3 namespace), reader, writer)` (`tests/test_screen_worker.py`, the B2 harness), plus `python -m agent_atv_screen --fake` over stdio. `tests/fake_pmd3.py` stands in for the provider/RSD (`UserspaceRsdTunnel`, `get_remote_pairing_tunnel_services`, `create_core_device_tunnel_service_using_remotepairing`), `AccessibilityAudit` (as the daemon behaves on tvOS: focus events and UIAccessibility notifications only for the last targeted session with monitored type 2, untargeted by the end of any session, which a tunnel closed too soon after the close delays, and once lost sessions are disposed of, focus moves only after the type is set again, a highlight on each focused element, daemon state that outlives sessions, special elements that are the first and last element), `DvtProvider`/`Screenshot`, `DeviceInfo.proclist()` (processes with the tvOS 27.2 fields, `show()` sets which run in the foreground), the manual-pairing browse and `RemotePairingManualPairingService` (which calls a bare `input()` like the real one). Catches the Wi-Fi provider swap and address choice, record migration (and refusing another Apple TV's record), reconnect and retry, the focus read (followed from the tunnel's start, `FOCUS_UNKNOWN` before a move, after a screen change notification, after a layout change until the daemon confirms the same element, and for an empty or element-less move, `ageMs` from the request's arrival, the highlight cleared after every move, unknown again when another inspector changes the type, the daemon reset on shutdown, a next worker, or the session after a lost tunnel, still followed once the Apple TV disposes of lost sessions, with the focus unknown until the next move, no special elements or cursor moves, one session per tunnel), the DTX buffer raise, the foreground classification (home, an app by its display name, the launch overlap, the screensaver, several apps, only the shell), screenshot files and serialization, `maxWidth`/`format` (JPEG and PNG scaled down, never up, validation; the Pillow cases skipped without Pillow), INFO logs (a failing follow logged once, the late retarget), the threaded PIN pairing and a late confirmation, the status events and the fake backend; misses real pymobiledevice3, PyTCP and tvOS behaviour (checked by hand on a Pi, §6.1).
 - **W2. pymobiledevice3 surface check**: runs only when pymobiledevice3 is importable (`requirements-screen.txt`); asserts every name in `fake_pmd3.IMITATES` exists with compatible signatures and coroutine-ness, that the objects handed back expose what the worker reads, and that `_create_no_root_tunnel_provider` and `input` are still looked up at call time. Catches the fake drifting from the pinned version; misses runtime behaviour.
-- **B3. pyatv surface check**: runs only when `pyatv` is importable (venv or CI with `requirements.txt`); asserts every function, attribute, enum member and keyword argument `fake_pyatv` imitates exists in the installed pyatv 0.18. Catches the fake drifting from the pinned pyatv; misses runtime behaviour.
+- **B3. pyatv surface check**: runs only when `pyatv` is importable (venv or CI with `requirements.txt`); asserts every function, attribute, enum member and keyword argument `fake_pyatv` imitates exists in the installed pyatv 0.18, and the private Companion path the session check reaches (`_interfaces`, `.api.fetch_attention_state()`, `SystemStatus`). Catches the fake drifting from the pinned pyatv; misses runtime behaviour.
 
 ### Homebridge plugin (`test/`, vitest)
 
-- **P1. HTTP API over a scripted fake bridge** (and, for screen reading, a scripted fake worker): `createAgentAtvCore({spawnBridge: fakeBridge, config: {api: {port: 0, bind: "127.0.0.1"}}, storagePath: tmpdir})`, requests via `fetch`; the fake bridge scripts responses, events, delays and crashes. Catches auth and token file, routes and validation, error → status + hint, device addressing, key sequencing, app name resolution, `open` and `wait --app` without screen reading, wait conditions and timeouts, seq/changedAt, the pairing state machine including credential-reuse fallback and the RemotePairing step (its begin failing into a `warning`, 4-digit checks, cancel, unpair), persisted files, bridge restart/backoff and `BRIDGE_TIMEOUT`; misses real bridge semantics (P2) and HomeKit (P3).
+- **P1. HTTP API over a scripted fake bridge** (and, for screen reading, a scripted fake worker): `createAgentAtvCore({spawnBridge: fakeBridge, config: {api: {port: 0, bind: "127.0.0.1"}}, storagePath: tmpdir})`, requests via `fetch`; the fake bridge scripts responses, events, delays and crashes. Catches auth and token file, routes and validation, error → status + hint, device addressing, key sequencing, app name resolution, `open` and `wait --app` without screen reading, wait conditions and timeouts, seq/changedAt, the pairing state machine including credential-reuse fallback and the RemotePairing step (its begin failing into a `warning`, 4-digit checks, cancel, unpair), persisted files, bridge restart/backoff and `BRIDGE_TIMEOUT`, the 45 s `power.set` timeout and the `POWER_NOT_CONFIRMED` hint; misses real bridge semantics (P2) and HomeKit (P3).
 - **P2. Plugin ↔ real bridge contract**: the P1 harness with the default spawner and `AGENT_ATV_FAKE_BRIDGE=1` (real Python bridge in `--fake` mode); skipped when `python3` is absent. Catches protocol drift between the plugin and bridge builders (field names, events, error codes, pairing flow); misses pyatv.
-- **P3. Homebridge platform with a fake API**: call the default export of `src/index.ts` with a fake `api` (real HAP from `@homebridge/hap-nodejs`, an EventEmitter for `didFinishLaunching`/`shutdown`, recorded `publishExternalAccessories`) and a fake bridge. Catches platform registration, nothing started before `didFinishLaunching`, invalid config logged without throwing, Television/InputSource/Speaker characteristics driven by state, `onSet` → bridge calls, `onGet` never awaiting the bridge, shutdown stopping the bridge; misses Home app behaviour and real Homebridge lifecycle quirks.
+- **P3. Homebridge platform with a fake API**: call the default export of `src/index.ts` with a fake `api` (real HAP from `@homebridge/hap-nodejs`, an EventEmitter for `didFinishLaunching`/`shutdown`, recorded `publishExternalAccessories`) and a fake bridge. Catches platform registration, nothing started before `didFinishLaunching`, invalid config logged without throwing, Television/InputSource/Speaker characteristics driven by state, `onSet` → bridge calls, `onGet` never awaiting the bridge, the `Active` write answering before the power is confirmed, shutdown stopping the bridge; misses Home app behaviour and real Homebridge lifecycle quirks.
 - **P4. Venv bootstrap with a fake command runner**: `ensureVenv({..., run: fakeRun})` over a temp dir, for `.venv` and `.venv-screen`; plus the core reporting a failed screen venv. Catches create/recreate/install/skip decisions, Python and OpenSSL version gates, error statuses and hints; misses real pip, network and distro Python quirks.
 - **P5. Screen routes with a scripted fake worker**: P1 harness with `spawnScreen` (`test/support/fake-screen.ts` speaks §6.2). Catches the worker spawn spec (args, `HOME`, env scrubbing), identifier persistence, worker restarts with the current address, bounded focus reads, `/focus`, `state?focus=1`, the settled focus after actions that send `"focus": true` and every unavailable report, no read without it, `FOCUS_UNKNOWN` (409, report, `wait` on `focus` polling through it and never matching an unknown focus, no move reported after the keys, a move reported late within the window, a focus older than the last app or playback change), the foreground app (`state?app=1` for each kind and when unavailable, `open` polling it, timing out and returning at once with `foregroundUnknown`, `wait` on `app` never matching `ambiguous`), `POST /screen`, screenshots (temp file, sha256/304, headers, non-PNG, `maxWidth`/`format` pass-through and validation, `image/jpeg` with its size), status logs at info (a failing reconnect once) and worker INFO lines at info, error mapping and hints, `/info` and DeviceSummary `screen`; misses the real worker (W1, C2) and pymobiledevice3.
 
@@ -1414,7 +1442,7 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
 
 ### CLI (`packages/agent-atv/test`, vitest)
 
-- **C1. CLI binary against a fake HTTP server**: spawn `node dist/cli.js …` (built once in vitest `globalSetup`) with an isolated `HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`/`TMPDIR` and env pointing at a `node:http` fake API that records requests and returns canned bodies. Catches argv and flags, config precedence and file modes, auth header, request bodies per command, text and `--json` output, stdout/stderr split, exit-code mapping, key specs and aliases, the `pair --no-input` and `--screen` flows, silent actions and `Focus:` lines after `--settle` and in `snapshot`, `App:` lines, `state focus`, `state app`, `open` without screen reading, `wait --focus`, screenshot files and the `--if-changed` cache, `--max-width`/`--jpeg` (body, `.jpg` default path, range error), `skills get` output; misses interactive TTY prompts and real plugin behaviour.
+- **C1. CLI binary against a fake HTTP server**: spawn `node dist/cli.js …` (built once in vitest `globalSetup`) with an isolated `HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`/`TMPDIR` and env pointing at a `node:http` fake API that records requests and returns canned bodies. Catches argv and flags, config precedence and file modes, auth header, request bodies per command, text and `--json` output, stdout/stderr split, exit-code mapping, key specs and aliases, the `pair --no-input` and `--screen` flows, silent actions and `Focus:` lines after `--settle` and in `snapshot`, `App:` lines, `state focus`, `state app`, `open` without screen reading, `wait --focus`, screenshot files and the `--if-changed` cache, `--max-width`/`--jpeg` (body, `.jpg` default path, range error), `power` outwaiting the global HTTP timeout, `skills get` output; misses interactive TTY prompts and real plugin behaviour.
 - **C2. Full-stack e2e**: CLI binary → `standalone.js` → real bridge and screen worker, both `--fake`, in a temp storage dir with `screen.enabled`; runs only with `AGENT_ATV_E2E=1` after both packages are built (`npm run test:e2e`). Catches cross-package drift on the core loop (three-step pair → snapshot with `Focus:` → silent open → wait → `fill --settle` → `press home --settle` with `Focus:` → silent press → state → `state focus` → `wait --focus` → screenshot → doctor); misses the real Apple TV, pyatv and pymobiledevice3.
 
 ## 9. Root tooling (scaffold)
@@ -1480,5 +1508,10 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
    recommend binding to the Tailscale IP. The token gives full remote control of the TV.
 10. **Verification review**: the "same or less functionality" rule is a judgement call against
     homebridge-appletv-enhanced (§7).
-11. **Python 3.14** hosts are refused by the venv check (pinned wheels unverified); the bridge code
+11. **Stale pyatv sessions**: why pushed updates stop (pyatv #2330, #2209) is unknown and can't be
+    triggered on demand. The session check (§2.3) assumes a stale session still answers
+    `FetchAttentionState` with the real power, or doesn't answer at all; it rests on a private pyatv
+    path (B3) and can't see a stale session while the power hasn't changed. Without it (an Apple TV that
+    refuses the request), `power.set` still confirms or fails, but the cached power can stay wrong.
+12. **Python 3.14** hosts are refused by the venv check (pinned wheels unverified); the bridge code
     itself must stay 3.10–3.14 compatible because development machines may run the tests on 3.14.

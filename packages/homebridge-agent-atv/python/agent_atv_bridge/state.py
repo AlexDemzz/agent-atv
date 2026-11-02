@@ -111,6 +111,10 @@ def app_state(app: Any) -> Optional[Dict[str, Any]]:
     return {"bundleId": app.identifier, "name": app.name or app.identifier}
 
 
+def power_state(atv: Any) -> str:
+    return enum_name(_read(lambda: atv.power.power_state))
+
+
 def keyboard_focus(atv: Any) -> str:
     return enum_name(_read(lambda: atv.keyboard.text_focus_state))
 
@@ -134,7 +138,7 @@ def build_state(
     volume = _read(lambda: atv.audio.volume) if volume_available else None
     return {
         "device": dict(device),
-        "power": enum_name(_read(lambda: atv.power.power_state)),
+        "power": power_state(atv),
         # The MRP now-playing client: the last app that played, not the foreground app.
         "nowPlaying": _read(lambda: app_state(atv.metadata.app)),
         "playing": playing_state(playing),

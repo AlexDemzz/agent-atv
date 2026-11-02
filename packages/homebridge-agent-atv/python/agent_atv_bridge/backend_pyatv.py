@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import logging
 import socket
-from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Dict, Iterator, Optional, TypeVar
 
 from .errors import BridgeError, exception_classes, map_exception
 from .pairing import PairingSessions
 from .keys import INPUT_ACTIONS, KEYS_WITH_ACTION
 from .publisher import StatePublisher, Timings
-from .state import build_state, device_id, device_summary, feature_unavailable, keyboard_focus, scan_device
+from .state import build_state, device_id, device_summary, feature_unavailable, keyboard_focus, power_state, scan_device
 
 _LOGGER = logging.getLogger("agent_atv_bridge.pyatv")
 
@@ -35,6 +36,7 @@ class _Listener:
         self._connection.publisher.notify()
 
     def powerstate_update(self, old_state: Any, new_state: Any) -> None:
+        self._connection.power_changed.set()
         self._connection.publisher.notify()
 
     def volume_update(self, old_level: float, new_level: float) -> None:
@@ -65,6 +67,7 @@ class _Connection:
         protocols: Dict[str, bool],
         *,
         const: Any,
+        exceptions: Any,
         timings: Timings,
         emit: Emit,
         on_dropped: Callable[["_Connection"], bool],
@@ -76,16 +79,83 @@ class _Connection:
         self.playing: Any = None
         self.keyboard_text: Optional[str] = None
         self._const = const
+        self._exceptions = exceptions
         self._timings = timings
         self._emit = emit
         self._on_dropped = on_dropped
         self.publisher = StatePublisher(self.state, lambda state: emit("state", device, state), timings)
         self.listener = _Listener(self)
         self.tasks: set = set()
+        self.power_changed = asyncio.Event()
+        self.probe_supported = True
+        self.power_commands = 0
+        self.power_commands_started = 0
+        self._session_check: Optional[asyncio.Task] = None
 
     def state(self) -> Dict[str, Any]:
         volume_available = not feature_unavailable(self.atv, self._const, "Volume")
         return build_state(self.atv, self.summary, self.protocols, self.playing, self.keyboard_text, volume_available)
+
+    async def wait_for_power(self, target: str, timeout_s: float) -> bool:
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        while power_state(self.atv) != target:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            self.power_changed.clear()
+            try:
+                await asyncio.wait_for(self.power_changed.wait(), remaining)
+            except asyncio.TimeoutError:
+                pass
+        return True
+
+    async def probe(self, grace_s: float = 0, current: Callable[[], bool] = lambda: True) -> Optional[str]:
+        """The power the Apple TV reports when asked (not pushed); None without an answer.
+
+        pyatv can keep a session whose pushed updates stopped while its sockets stay up, so the
+        session is dropped (and the plugin reconnects) when the answer is missing or disagrees.
+        A result for which `current()` turned false, a power command having overtaken it, is ignored.
+        """
+        timeout_s = self._timings.probe_timeout_s
+        try:
+            probed = await asyncio.wait_for(_attention_power(self.atv, self._const), timeout_s)
+        except Exception as exc:
+            if _refused(exc, self._exceptions):
+                if self.probe_supported:
+                    _LOGGER.warning("%s: cannot check the session for missed updates: %s", self.device, exc)
+                self.probe_supported = False
+            elif current():
+                failure = f"no answer within {timeout_s:g} s" if _is_timeout(exc) else f"failed: {exc}"
+                self.stale(f"FetchAttentionState {failure}")
+            return None
+        if probed != power_state(self.atv) and grace_s:
+            await asyncio.sleep(grace_s)
+        session = power_state(self.atv)
+        _LOGGER.debug("%s: session check: the Apple TV says power %s, the session %s", self.device, probed, session)
+        if probed != "unknown" and probed != session and current():
+            self.stale(f"the Apple TV says power {probed} but the session still says {session}")
+        return probed
+
+    async def _check_session_periodically(self) -> None:
+        while self.probe_supported:
+            await asyncio.sleep(self._timings.probe_s)
+            if self.power_commands:
+                continue
+            commands_before = self.power_commands_started
+            await self.probe(self._timings.probe_grace_s, current=lambda: self.power_commands_started == commands_before)
+
+    @contextlib.contextmanager
+    def power_command(self) -> Iterator[None]:
+        self.power_commands += 1
+        self.power_commands_started += 1
+        try:
+            yield
+        finally:
+            self.power_commands -= 1
+
+    def stale(self, why: str) -> None:
+        _LOGGER.warning("%s: pushed updates stopped (%s); reconnecting", self.device, why)
+        self.dropped("stale_session", why)
 
     def _spawn(self, call: Awaitable[Any]) -> None:
         task = asyncio.ensure_future(call)
@@ -130,8 +200,11 @@ class _Connection:
         if keyboard_focus(self.atv) == "focused":
             await self.refresh_keyboard()
         self.publisher.start()
+        self._session_check = asyncio.ensure_future(self._check_session_periodically())
 
     async def close(self) -> None:
+        if self._session_check is not None:
+            self._session_check.cancel()
         self.publisher.stop()
         try:
             self.atv.push_updater.stop()
@@ -275,6 +348,7 @@ class PyatvBackend:
                 config,
                 protocols,
                 const=self._pyatv.const,
+                exceptions=self._pyatv.exceptions,
                 timings=self._timings,
                 emit=lambda *event: self._emit(*event),
                 on_dropped=self._forget_connection,
@@ -339,13 +413,28 @@ class PyatvBackend:
 
     async def power_set(self, params: Dict[str, Any]) -> Dict[str, Any]:
         connection = self._connection(params["device"])
+        with connection.power_command():
+            return await self._set_power(connection, params["on"])
+
+    async def _set_power(self, connection: _Connection, on: bool) -> Dict[str, Any]:
         power = connection.atv.power
-        if params["on"]:
+        # Companion raises NotImplementedError for await_new_state=True, so the bridge waits itself.
+        if on:
+            target, wait_s = "on", self._timings.power_on_wait_s
             await self._guard(power.turn_on(await_new_state=False), feature="TurnOn")
         else:
+            target, wait_s = "off", self._timings.power_off_wait_s
             await self._guard(power.turn_off(await_new_state=False), feature="TurnOff")
+        if not await connection.wait_for_power(target, wait_s):
+            if await connection.probe() != target:
+                current = power_state(connection.atv)
+                raise BridgeError(
+                    "POWER_NOT_CONFIRMED",
+                    f"{connection.summary['name']} still reports power {current} {wait_s:g} s after power {target}",
+                    {"requested": target, "power": current},
+                )
         connection.publisher.notify()
-        return {"power": connection.state()["power"]}
+        return {"power": target}
 
     async def volume_set(self, params: Dict[str, Any]) -> Dict[str, Any]:
         connection = self._connection(params["device"])
@@ -396,6 +485,28 @@ class PyatvBackend:
         await self._pairings.close_all()
         for device in list(self._connections):
             await self._connections.pop(device).close()
+
+
+async def _attention_power(atv: Any, const: Any) -> str:
+    """Companion FetchAttentionState, which pyatv 0.18 only exposes on its private Companion power object."""
+    companion = atv.power._interfaces[const.Protocol.Companion]
+    status = await companion.api.fetch_attention_state()
+    if status.name == "Asleep":
+        return "off"
+    return "on" if status.name in ("Awake", "Idle", "Screensaver") else "unknown"
+
+
+def _refused(exc: BaseException, exceptions: Any) -> bool:
+    """The Apple TV answered without a state (pyatv raises ProtocolError without a cause), or pyatv lacks the hook."""
+    protocol_error = exception_classes(exceptions, "ProtocolError")
+    answered = bool(protocol_error) and isinstance(exc, protocol_error) and exc.__cause__ is None
+    return answered or isinstance(exc, (AttributeError, KeyError))
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """pyatv wraps its own Companion request timeout in a ProtocolError."""
+    timeouts = (asyncio.TimeoutError, TimeoutError)
+    return isinstance(exc, timeouts) or isinstance(exc.__cause__, timeouts)
 
 
 async def _ipv4(address: str) -> Optional[str]:

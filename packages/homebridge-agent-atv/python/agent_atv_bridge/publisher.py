@@ -21,6 +21,13 @@ class Timings:
     # Below the plugin's 10 s timeouts (DESIGN.md §2.4) so a hung call answers DEVICE_TIMEOUT first.
     call_timeout_s: float = 8.0
     connect_timeout_s: float = 25.0
+    # Measured on tvOS 27.2: the pushed power state flips 6 to 7.5 s after turn_on, within 1.5 s after turn_off.
+    power_on_wait_s: float = 20.0
+    power_off_wait_s: float = 10.0
+    # Companion's own request timeout is 5 s; this lets it answer first.
+    probe_timeout_s: float = 6.0
+    probe_s: float = 60.0
+    probe_grace_s: float = 3.0
 
 
 def _without_position(state: Dict[str, Any]) -> Dict[str, Any]:

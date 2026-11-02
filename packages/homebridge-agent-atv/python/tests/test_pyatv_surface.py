@@ -84,6 +84,22 @@ class PyatvSurfaceTest(unittest.TestCase):
                     elif isinstance(fake, property):
                         self.assertFalse(inspect.isfunction(inspect.getattr_static(real_class, name)))
 
+    def test_the_private_companion_hook_the_session_check_reaches(self) -> None:
+        # The bridge reads atv.power._interfaces[Protocol.Companion].api.fetch_attention_state().
+        from pyatv.core.facade import FacadePower
+        from pyatv.core.relayer import Relayer
+        from pyatv.protocols.companion import CompanionPower
+        from pyatv.protocols.companion.api import CompanionAPI, SystemStatus
+
+        self.assertTrue(issubclass(FacadePower, Relayer))
+        relayer = Relayer(interface.Power, [pyatv.const.Protocol.Companion])
+        relayer.register("companion power", pyatv.const.Protocol.Companion)
+        self.assertEqual(relayer._interfaces, {pyatv.const.Protocol.Companion: "companion power"})
+        self.assertIn("self.api", inspect.getsource(CompanionPower.__init__))
+        self.assertTrue(inspect.iscoroutinefunction(CompanionAPI.fetch_attention_state))
+        self.assertEqual(_parameters(CompanionAPI.fetch_attention_state), [])
+        self.assertEqual({m.name: m.value for m in SystemStatus}, {m.name: m.value for m in fp.SystemStatus})
+
     def test_bridge_listener_matches_every_pyatv_listener_interface(self) -> None:
         from agent_atv_bridge.backend_pyatv import _Listener
 

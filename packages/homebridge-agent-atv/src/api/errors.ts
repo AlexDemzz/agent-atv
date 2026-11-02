@@ -54,6 +54,7 @@ const TABLE: Record<string, { status: number; hint: string }> = {
   SCREEN_NOT_PAIRED: { status: 503, hint: 'run agent-atv pair --screen' },
   SCREEN_UNAVAILABLE: { status: 503, hint: 'Retry in a few seconds; if it persists, run agent-atv doctor.' },
   DEVICE_TIMEOUT: { status: 504, hint: 'The Apple TV did not answer in time; retry, or check it is awake with agent-atv snapshot.' },
+  POWER_NOT_CONFIRMED: { status: 504, hint: 'Run agent-atv power on again, then check with: agent-atv wait --power on' },
   BRIDGE_TIMEOUT: { status: 504, hint: 'Retry; if it persists, run agent-atv doctor.' },
 };
 
@@ -102,6 +103,12 @@ export function toApiError(error: unknown, deviceName: string): ApiError {
       return new ApiError('PAIRING_BACKOFF', error.message, { ...details, retryAfterSec }, {
         headers: { 'Retry-After': String(retryAfterSec) },
         hint: `${deviceName} refuses pairing for now; wait ${retryAfterSec}s, then retry agent-atv pair.`,
+      });
+    }
+    case 'POWER_NOT_CONFIRMED': {
+      const requested = details.requested === 'off' ? 'off' : 'on';
+      return new ApiError('POWER_NOT_CONFIRMED', error.message, details, {
+        hint: `Run agent-atv power ${requested} again, then check with: agent-atv wait --power ${requested}`,
       });
     }
     default:

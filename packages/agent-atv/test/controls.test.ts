@@ -44,6 +44,15 @@ describe('power', () => {
     expect(posts('/power')).toEqual([{ on: false }, { on: true }]);
   });
 
+  it('waits longer than the global HTTP timeout, since the plugin waits for the Apple TV to change state', async () => {
+    api.on('POST', `${DEVICE}/power`, { body: { ok: true, power: 'off', state: livingRoomState({ power: 'off' }) }, delayMs: 400 });
+
+    const result = await sandbox.run(['power', 'off', '--timeout', '100']);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('power: off\n');
+  });
+
   it('toggles from the current state', async () => {
     const result = await sandbox.run(['power', 'toggle']);
 

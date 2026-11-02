@@ -3,7 +3,7 @@ import type { Characteristic, Service } from '@homebridge/hap-nodejs';
 import { afterEach, describe, expect, it } from 'vitest';
 import plugin from '../src/index';
 import { DEVICE_ID, installAppleTv } from './support/apple-tv';
-import { FakeBridge, NO_RESPONSE } from './support/fake-bridge';
+import { BridgeFailure, FakeBridge, NO_RESPONSE } from './support/fake-bridge';
 import { FakeHomebridgeApi, type FakePlatformAccessory } from './support/fake-homebridge';
 import { eventually, makeStorage, RecordingLogger, removeTempDirs, seedPairedDevice } from './support/harness';
 
@@ -186,6 +186,24 @@ describe('Homebridge platform (P3)', () => {
       'volume_up',
       'volume_down',
     ]);
+  });
+
+  it('answers an Active write before the Apple TV confirms the change, which takes seconds, and logs a failure', async () => {
+    const { api, bridge, log } = await boot();
+    const television = service(await publishedTv(api), S.Television);
+    bridge.handle('power.set', () => NO_RESPONSE);
+
+    const started = Date.now();
+    await char(television, C.Active).handleSetRequest(C.Active.INACTIVE);
+
+    expect(Date.now() - started).toBeLessThan(100);
+    expect(bridge.calls('power.set')).toEqual([{ device: DEVICE_ID, on: false }]);
+
+    bridge.handle('power.set', () => {
+      throw new BridgeFailure('POWER_NOT_CONFIRMED', 'Living Room still reports power on');
+    });
+    await char(television, C.Active).handleSetRequest(C.Active.INACTIVE);
+    await eventually(() => log.at('warn').some((line) => line.includes('Living Room still reports power on')));
   });
 
   it('answers onGet from the cache without waiting for the bridge', async () => {

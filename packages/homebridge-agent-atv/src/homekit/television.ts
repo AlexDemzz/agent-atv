@@ -69,7 +69,7 @@ export class TelevisionAccessories {
   }
 
   private build(device: Device, inputs: App[]): Published {
-    const { api, devices } = this.options;
+    const { api, devices, log } = this.options;
     const { Service: S, Characteristic: C, uuid } = api.hap;
     const name = devices.displayName(device);
     const accessory = new api.platformAccessory(name, uuid.generate(`agent-atv:${device.id}`), APPLE_TV_CATEGORY);
@@ -89,9 +89,13 @@ export class TelevisionAccessories {
       .onGet(() => (device.state.power === 'on' ? C.Active.ACTIVE : C.Active.INACTIVE))
       .onSet(async (value) => {
         const on = value === C.Active.ACTIVE;
+        // HomeKit gives up on a write after 10 s and the Apple TV takes up to 20 s to confirm, so the
+        // write answers once sent and Active follows the state events.
         await this.act(device, async () => {
-          const { power } = await devices.call<{ power: 'on' | 'off' | 'unknown' }>(device, 'power.set', { on });
-          devices.patchState(device, { power });
+          devices
+            .call<{ power: 'on' | 'off' | 'unknown' }>(device, 'power.set', { on })
+            .then(({ power }) => devices.patchState(device, { power }))
+            .catch((error: unknown) => log.warn(`${devices.displayName(device)}: HomeKit power command failed: ${errorMessage(error)}`));
         });
       });
     television
