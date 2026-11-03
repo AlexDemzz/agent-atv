@@ -61,7 +61,7 @@ class Timings:
     browse_s: float = 20.0
     pin_timeout_s: float = 120.0
     session_close_s: float = 1.0
-    # The Apple TV ends a session lost with its tunnel 20 s or more later, untargeting the one that follows.
+    # How long the session may stay untargeted after the Apple TV ends one lost before it (§6.1 One target).
     retarget_s: float = 30.0
 
 
@@ -493,10 +493,8 @@ class Pmd3Backend:
         return ax
 
     async def _keep_targeted(self, ax: Any) -> None:
-        """Targets the session again and again: the Apple TV ends a session lost before it at no set
-        time, which untargets this one with no event to tell, and the daemon would then highlight
-        every focus move with nobody to clear it. Targeting it again brings back focus moves; it
-        costs about 70 ms and loses none (measured on tvOS 27.2)."""
+        """The Apple TV ends a session lost before this one at no set time, untargeting this one with
+        no event to tell, and then highlights every focus move with nobody to clear it."""
         failing = False
         while True:
             await asyncio.sleep(self._timings.retarget_s)

@@ -1221,10 +1221,12 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   element. So the worker calls `deviceDidGetTargeted` and sets the monitored type 2 once more on its
   session every 30 s while it is the current one. On a healthy session that costs about 70 ms and
   loses no move (measured on tvOS 27.2: 18 moves out of 18 with a retarget every 3 s). A one-shot
-  retarget 40 s after the session opened, as in 0.1.2, left the worker untargeted for good when the
-  Apple TV disposed of the lost session later than that (2026-11-02, after a Homebridge restart).
-  After a lost session, the first retarget makes the focus unknown again until the next move: moves
-  made while the session was untargeted went unreported. Not covered: a session another inspector
+  retarget 40 s after the session opened left the worker untargeted for good when the Apple TV
+  disposed of the lost session later than that (2026-11-02, after a Homebridge restart). After a
+  lost session, the first retarget makes the focus unknown again until the next move: moves made
+  while the session was untargeted went unreported. Later retargets keep the focus, so a read at rest
+  still answers; nothing tells a healthy session from an untargeted one, so a disposal later than the
+  first retarget can leave a stale focus for up to 30 s, the price of not losing it every 30 s. Not covered: a session another inspector
   closes cleanly also untargets the worker's, and targeting it again does not bring the focus moves
   back there (measured on tvOS 27.2); only a fresh session does, which costs about 1 s of blindness.
 - **Focus not known**: nothing reports where the focus is before it moves, and a wrong element is
