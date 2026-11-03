@@ -56,6 +56,10 @@ class FakeBackend:
         if not self._identifier:
             raise BridgeError("SCREEN_NOT_PAIRED", "No RemotePairing pair record for this Apple TV")
 
+    async def follow(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_paired()
+        return {}
+
     async def focus(self, params: Dict[str, Any]) -> Dict[str, Any]:
         self._require_paired()
         return {"focus": dict(FAKE_FOCUS), "ageMs": 0}

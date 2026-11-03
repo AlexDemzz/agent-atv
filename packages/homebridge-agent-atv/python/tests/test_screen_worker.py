@@ -21,6 +21,7 @@ RECORD = "0A1B2C3D-0000-4000-8000-00000000AA01"
 # The first retarget after a lost session makes the focus unknown: FAST never retargets, only LostSessionTest does.
 FAST = Timings(retry_s=(0.05, 0.1), health_s=0.05, call_timeout_s=0.5, connect_timeout_s=0.5, browse_s=0.3, session_close_s=0.05, retarget_s=60)
 RETARGET = dataclasses.replace(FAST, retarget_s=0.15)
+IDLE = dataclasses.replace(FAST, follow_idle_s=0.3)
 
 try:
     from PIL import Image
@@ -72,6 +73,11 @@ class ScreenWorkerTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def connected(self):
         return await self.status("connected")
+
+    async def following(self) -> None:
+        """What an agent action does first: the tunnel up, then the worker asked to follow the focus."""
+        await self.connected()
+        self.assertEqual(await self.worker.call("follow"), {})
 
     async def status(self, tunnel: str):
         while True:
@@ -190,14 +196,14 @@ ARROW_FOCUS = {"label": "Swipe up for full screen", "value": None, "identifier":
 
 class FocusTest(ScreenWorkerTestCase):
     async def test_answers_the_element_tvos_moved_the_focus_to(self) -> None:
-        await self.connected()
+        await self.following()
 
         await self.move_focus(ARROW)
 
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
     async def test_says_how_long_ago_the_focus_moved(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(b"\x03last")
         await asyncio.sleep(0.2)
 
@@ -211,7 +217,7 @@ class FocusTest(ScreenWorkerTestCase):
 
     async def test_the_age_of_a_move_leaves_out_the_time_the_read_takes(self) -> None:
         # The plugin dates the move from when it sent the read; a slow read must not age it.
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
         self.pmd3.attributes_delay_s = 0.3
 
@@ -220,7 +226,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertLess(read["ageMs"], 100)
 
     async def test_the_focus_is_unknown_until_it_moves(self) -> None:
-        await self.connected()
+        await self.following()
 
         error = await self.worker.error("focus")
 
@@ -228,7 +234,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertIn("moves", error["message"])
 
     async def test_never_takes_the_first_or_last_element_for_the_focus(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
         await self.worker.call("focus")
 
@@ -237,7 +243,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertFalse(any("move" in s.lower() or "press" in s.lower() for s in selectors))
 
     async def test_clears_the_highlight_the_apple_tv_draws_on_every_newly_focused_element(self) -> None:
-        await self.connected()
+        await self.following()
 
         for element in (ARROW, b"\x03last", ARROW):
             self.pmd3.move_focus(element)
@@ -247,7 +253,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertIsNone(self.pmd3.highlighted)
 
     async def test_clears_the_highlight_the_apple_tv_draws_again_on_a_layout_change(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
 
         self.pmd3.relayout()
@@ -257,14 +263,15 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertIsNone(self.pmd3.highlighted)
 
     async def test_keeps_one_accessibility_session_across_reads(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
+        sessions = self.pmd3.ax_sessions
         for _ in range(3):
             await self.worker.call("focus")
-        self.assertEqual(self.pmd3.ax_sessions, 1)
+        self.assertEqual(self.pmd3.ax_sessions, sessions)
 
     async def test_the_focus_is_unknown_when_the_apple_tv_reports_a_move_to_no_element(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
         self.pmd3.move_focus(None)
         await asyncio.sleep(0.05)
@@ -273,7 +280,7 @@ class FocusTest(ScreenWorkerTestCase):
 
     async def test_the_focus_is_unknown_when_the_focused_element_reads_empty(self) -> None:
         # Seen in a video player while "Info" was focused: Label, Value and Identifier all empty.
-        await self.connected()
+        await self.following()
         self.pmd3.elements[b"\x04blank"] = {"Label": "", "Value": "", "Identifier": ""}
         self.pmd3.elements[b"\x05none"] = {}
         for element in (b"\x04blank", b"\x05none"):
@@ -285,7 +292,7 @@ class FocusTest(ScreenWorkerTestCase):
         await asyncio.sleep(0.05)
 
     async def test_the_focus_is_unknown_once_the_screen_or_its_layout_changes(self) -> None:
-        await self.connected()
+        await self.following()
         for notification in ("UIAccessibilityScreenChangedNotification", "UIAccessibilityLayoutChangedNotification"):
             await self.move_focus(ARROW)
 
@@ -295,7 +302,7 @@ class FocusTest(ScreenWorkerTestCase):
             self.assertEqual((await self.worker.error("focus"))["code"], "FOCUS_UNKNOWN", notification)
 
     async def test_a_layout_change_that_keeps_the_focused_element_keeps_the_focus_and_its_move_time(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
         await asyncio.sleep(0.2)
 
@@ -308,7 +315,7 @@ class FocusTest(ScreenWorkerTestCase):
 
     async def test_a_layout_change_that_names_another_element_leaves_the_focus_unknown(self) -> None:
         # A move that sent no event, as inside apps: the daemon now inspects an element never reported.
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
         self.pmd3.focused = b"\x03last"
 
@@ -318,7 +325,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.error("focus"))["code"], "FOCUS_UNKNOWN")
 
     async def test_after_a_screen_change_the_focus_stays_unknown_through_a_layout_change(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
 
         self.pmd3.post_notification("UIAccessibilityScreenChangedNotification")
@@ -328,7 +335,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.error("focus"))["code"], "FOCUS_UNKNOWN")
 
     async def test_a_layout_change_then_a_focus_move_reports_the_new_element(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(b"\x03last")
 
         self.pmd3.post_notification("UIAccessibilityLayoutChangedNotification")
@@ -337,7 +344,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
     async def test_a_screen_change_during_the_read_makes_the_focus_unknown(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
         self.pmd3.attributes_delay_s = 0.2
 
@@ -348,7 +355,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.response(reading))["error"]["code"], "FOCUS_UNKNOWN")
 
     async def test_a_move_during_the_read_reports_the_new_element(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(b"\x03last")
         self.pmd3.attributes_delay_s = 0.1
 
@@ -359,7 +366,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.response(reading))["result"]["focus"], ARROW_FOCUS)
 
     async def test_an_announcement_keeps_the_focus(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
 
         self.pmd3.post_notification("UIAccessibilityAnnouncementNotification")
@@ -368,7 +375,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
     async def test_the_focus_is_unknown_again_after_another_inspector_takes_over_then_followed_again(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
 
         self.pmd3.set_monitored_type(1)
@@ -379,7 +386,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"]["label"], "M6+")
 
     async def test_stops_following_the_focus_on_shutdown(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
 
         await self.worker.close()
@@ -390,11 +397,11 @@ class FocusTest(ScreenWorkerTestCase):
 
     async def test_a_worker_started_after_another_shut_down_follows_the_focus_once_the_apple_tv_disposes_of_lost_sessions(self) -> None:
         self.pmd3.close_flush_s = 0.02
-        await self.connected()
+        await self.following()
         await self.worker.close()
 
         self.worker = self.start_worker()
-        await self.connected()
+        await self.following()
         self.pmd3.dispose_lost_sessions()
 
         await self.move_focus(ARROW)
@@ -402,7 +409,7 @@ class FocusTest(ScreenWorkerTestCase):
 
     async def test_after_a_failed_read_the_fresh_session_follows_the_focus_once_the_apple_tv_disposes_of_lost_sessions(self) -> None:
         self.pmd3.close_flush_s = 0.02
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
         self.pmd3.fail_next = [ConnectionResetError("stale tunnel")]
         await self.worker.error("focus")
@@ -413,7 +420,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
     async def test_a_failed_read_retries_on_a_fresh_tunnel_where_the_focus_is_known_after_the_next_move(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
         self.pmd3.fail_next = [ConnectionResetError("stale tunnel")]
 
@@ -425,7 +432,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
     async def test_fails_with_screen_failed_when_the_retry_fails_too(self) -> None:
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
         self.pmd3.ax_broken = ConnectionResetError("daemon gone")
 
@@ -435,7 +442,7 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertIn("daemon gone", error["message"])
 
     async def test_logs_a_session_that_keeps_failing_to_open_once_then_its_recovery(self) -> None:
-        await self.connected()
+        await self.following()
         with self.assertLogs("agent_atv_screen", "INFO") as logs:
             self.pmd3.ax_broken = ConnectionResetError("daemon gone")
             self.pmd3.open_tunnels[0].fake_drop()
@@ -464,15 +471,114 @@ class FocusTest(ScreenWorkerTestCase):
         self.assertEqual(error["code"], "SCREEN_UNAVAILABLE")
 
 
-class LostSessionTest(ScreenWorkerTestCase):
-    timings = RETARGET
+class OnDemandFollowingTest(ScreenWorkerTestCase):
+    """The inspector highlights every focus move while it follows: only around agent actions."""
 
-    async def test_a_worker_started_after_another_was_killed_follows_the_focus_once_the_apple_tv_disposes_of_the_lost_session(self) -> None:
+    timings = IDLE
+
+    async def test_a_move_with_no_agent_following_shows_no_highlight(self) -> None:
         await self.connected()
+
+        self.pmd3.move_focus(ARROW)
+
+        self.assertIsNone(self.pmd3.highlighted)
+        self.assertEqual(self.pmd3.open_sessions, [])
+
+    async def test_a_worker_started_after_one_killed_while_following_leaves_no_highlight(self) -> None:
+        await self.following()
         await self.kill_worker()
 
         self.worker = self.start_worker()
         await self.connected()
+        self.pmd3.move_focus(ARROW)
+
+        self.assertIsNone(self.pmd3.highlighted)
+
+    async def test_after_follow_a_move_is_reported_and_its_highlight_cleared(self) -> None:
+        await self.following()
+
+        self.pmd3.move_focus(ARROW)
+        self.assertEqual(self.pmd3.highlighted, ARROW)
+        await self.move_focus(ARROW)
+
+        self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
+
+    async def test_stops_following_once_no_agent_asked_for_a_while(self) -> None:
+        await self.following()
+        await self.move_focus(ARROW)
+
+        await asyncio.sleep(IDLE.follow_idle_s + 0.1)
+        self.pmd3.move_focus(b"\x03last")
+
+        self.assertIsNone(self.pmd3.highlighted)
+        self.assertEqual(self.pmd3.open_sessions, [])
+        self.assertEqual((await self.worker.error("focus"))["code"], "FOCUS_UNKNOWN")
+
+    async def test_a_focus_read_while_following_keeps_it_following(self) -> None:
+        await self.following()
+        await self.move_focus(ARROW)
+        await asyncio.sleep(0.2)
+
+        await self.worker.call("focus")
+        await asyncio.sleep(0.2)
+        await self.move_focus(b"\x03last")
+
+        self.assertEqual((await self.worker.call("focus"))["focus"]["label"], "M6+")
+
+    async def test_a_focus_read_while_not_following_answers_unknown_with_the_fix_and_opens_no_session(self) -> None:
+        await self.connected()
+        sessions = self.pmd3.ax_sessions
+
+        error = await self.worker.error("focus")
+
+        self.assertEqual(error["code"], "FOCUS_UNKNOWN")
+        self.assertIn("agent-atv press down --settle", error["message"])
+        self.assertEqual(self.pmd3.ax_sessions, sessions)
+        self.pmd3.move_focus(ARROW)
+        self.assertIsNone(self.pmd3.highlighted)
+
+    async def test_follows_the_focus_when_asked_right_after_the_reset_session_closed(self) -> None:
+        # The daemon learns of the reset session's end late, then untargets whichever session follows.
+        await self.worker.close()
+        self.pmd3.close_flush_s = 0.02
+        self.worker = self.start_worker()
+        await self.following()
+        await asyncio.sleep(0.05)
+
+        await self.move_focus(ARROW)
+
+        self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
+
+    async def test_follow_answers_screen_not_paired_without_a_pair_record(self) -> None:
+        await self.worker.close()
+        self.pmd3 = fake_pmd3.FakePmd3()
+        self.worker = self.start_worker()
+
+        self.assertEqual((await self.worker.error("follow"))["code"], "SCREEN_NOT_PAIRED")
+
+    async def test_logs_an_inspector_reset_that_keeps_failing_once(self) -> None:
+        await self.connected()
+        with self.assertLogs("agent_atv_screen", "INFO") as logs:
+            self.pmd3.ax_broken = ConnectionResetError("daemon gone")
+            for _ in range(3):
+                self.pmd3.open_tunnels[0].fake_drop()
+                await self.status("connecting")
+                await self.connected()
+
+        failures = [line for line in logs.output if "Cannot reset the accessibility inspector" in line]
+        self.assertEqual(len(failures), 1, logs.output)
+        self.assertIn("daemon gone", failures[0])
+
+
+class LostSessionTest(ScreenWorkerTestCase):
+    timings = RETARGET
+
+    async def test_a_worker_started_after_another_was_killed_follows_the_focus_once_the_apple_tv_disposes_of_the_lost_session(self) -> None:
+        await self.following()
+        await self.kill_worker()
+
+        self.worker = self.start_worker()
+        await self.following()
         self.pmd3.dispose_lost_sessions()
         await asyncio.sleep(RETARGET.retarget_s + 0.05)
 
@@ -480,10 +586,10 @@ class LostSessionTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
     async def test_follows_the_focus_again_when_the_apple_tv_disposes_of_the_lost_session_after_the_first_retarget(self) -> None:
-        await self.connected()
+        await self.following()
         await self.kill_worker()
         self.worker = self.start_worker()
-        await self.connected()
+        await self.following()
         await asyncio.sleep(RETARGET.retarget_s + 0.05)
 
         self.pmd3.dispose_lost_sessions()
@@ -493,7 +599,7 @@ class LostSessionTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
     async def test_the_focus_stays_known_across_retargets_once_the_first_after_a_lost_session_has_passed(self) -> None:
-        await self.connected()
+        await self.following()
         await asyncio.sleep(RETARGET.retarget_s + 0.05)
         await self.move_focus(ARROW)
 
@@ -502,10 +608,10 @@ class LostSessionTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
     async def test_the_focus_is_unknown_once_followed_again_after_moves_the_disposal_hid(self) -> None:
-        await self.connected()
+        await self.following()
         await self.kill_worker()
         self.worker = self.start_worker()
-        await self.connected()
+        await self.following()
         await self.move_focus(ARROW)
 
         self.pmd3.dispose_lost_sessions()
@@ -515,12 +621,12 @@ class LostSessionTest(ScreenWorkerTestCase):
         self.assertEqual((await self.worker.error("focus"))["code"], "FOCUS_UNKNOWN")
 
     async def test_after_the_tunnel_drops_under_a_session_the_reconnected_one_follows_the_focus_once_the_apple_tv_disposes_of_it(self) -> None:
-        await self.connected()
+        await self.following()
         # Past the first session's own retarget, so only the lost tunnel can call for another.
         await asyncio.sleep(RETARGET.retarget_s + 0.05)
         self.pmd3.open_tunnels[0].fake_drop()
         await self.status("connecting")
-        await self.connected()
+        await self.following()
 
         self.pmd3.dispose_lost_sessions()
         await asyncio.sleep(RETARGET.retarget_s + 0.05)
@@ -853,8 +959,10 @@ class FakeWorkerStdioTest(unittest.TestCase):
     def test_pairs_with_pin_1234_then_reads_focus_and_captures(self) -> None:
         worker = self.start()
         self.assertEqual(worker.request("focus")["error"]["code"], "SCREEN_NOT_PAIRED")
+        self.assertEqual(worker.request("follow")["error"]["code"], "SCREEN_NOT_PAIRED")
         self.assertTrue(worker.request("pair.begin")["ok"])
         self.assertEqual(worker.request("pair.pin", {"pin": "1234"})["result"], {"identifier": "FAKE-REMOTEPAIRING-0001"})
+        self.assertEqual(worker.request("follow")["result"], {})
         # Its focus has always just moved, so a focus read after any key press finds it.
         self.assertEqual(
             worker.request("focus")["result"],

@@ -22,6 +22,7 @@ PIN = re.compile(r"\d{4,8}")
 _CHECKS: Dict[str, Dict[str, Callable[[Any], bool]]] = {
     "ping": {},
     "shutdown": {},
+    "follow": {},
     "focus": {},
     "foreground": {},
     "screenshot": {

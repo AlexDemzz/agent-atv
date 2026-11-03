@@ -39,6 +39,10 @@ PROPERTIES_CHANGED = "hostInspectorCurrentElementPropertiesChanged:"
 # Bounds the inspector reset of a session being dropped, often over a dead tunnel.
 INSPECTOR_RESET_S = 2.0
 NOT_FOLLOWED = "The focused element is not known yet: the Apple TV reports it only when the focus moves"
+NOT_ARMED = (
+    "The focus is followed only during agent actions: move it with a direction key and settle"
+    " (agent-atv press down --settle)"
+)
 SCREEN_CHANGED = "The screen changed after the focus last moved: the focused element is known again once it moves"
 LAYOUT_CHANGED = (
     "The screen's layout changed after the focus last moved: the focused element is known again once it moves"
@@ -63,6 +67,8 @@ class Timings:
     session_close_s: float = 1.0
     # How long the session may stay untargeted after the Apple TV ends one lost before it (§6.1 One target).
     retarget_s: float = 30.0
+    # How long the focus stays followed after the last follow or focus request (§6.1 Focus following).
+    follow_idle_s: float = 15.0
 
 
 def _text(value: Any) -> Optional[str]:
@@ -230,6 +236,12 @@ class Pmd3Backend:
         self._unknown: Optional[str] = NOT_FOLLOWED
         self._focused: Any = None
         self._moved_at = 0.0
+        # Loop time until which an agent wants the focus followed, or None (§6.1 Focus following).
+        self._follow_until: Optional[float] = None
+        self._idle: Optional[asyncio.Task] = None
+        # Loop time of the last session close on the current tunnel, or None.
+        self._closed_at: Optional[float] = None
+        self._reset_failing = False
 
     # --- lifecycle -------------------------------------------------------------------------
 
@@ -259,6 +271,9 @@ class Pmd3Backend:
             self._pairing = None
         if self._supervisor is not None:
             self._supervisor.cancel()
+        if self._idle is not None:
+            self._idle.cancel()
+        self._follow_until = None
         await self._drop_tunnel()
 
     def status(self) -> Dict[str, Any]:
@@ -299,6 +314,7 @@ class Pmd3Backend:
                 try:
                     await asyncio.wait_for(self._open(), self._timings.connect_timeout_s)
                     attempt = 0
+                    await self._reset_inspector(self._tunnel.rsd)
                     await self._keep_following()
                     self._set("connected")
                 except asyncio.CancelledError:
@@ -320,8 +336,62 @@ class Pmd3Backend:
                 await self._keep_following()
             await self._sleep(self._timings.health_s)
 
+    async def _reset_inspector(self, rsd: Any) -> None:
+        """Turns off what a killed worker may have left on: a frame on every focus move."""
+        ax = self._pmd3.accessibilityaudit.AccessibilityAudit(rsd)
+        try:
+            await asyncio.wait_for(ax.__aenter__(), self._timings.call_timeout_s)
+            try:
+                await asyncio.wait_for(self._reset(ax), INSPECTOR_RESET_S)
+            finally:
+                await self._close_quietly(ax)
+                self._session_ended()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Tried again on every new tunnel: only the first failure of a streak is news.
+            log = _LOGGER.debug if self._reset_failing else _LOGGER.info
+            log("Cannot reset the accessibility inspector (%s); the TV may frame each focus move until the next tunnel", _describe(exc))
+            self._reset_failing = True
+            return
+        self._reset_failing = False
+
+    @classmethod
+    async def _reset(cls, ax: Any) -> None:
+        await ax._invoke("deviceDidGetTargeted")
+        await cls._stop_following(ax)
+
+    def _session_ended(self) -> None:
+        self._session_closed = True
+        self._closed_at = asyncio.get_running_loop().time()
+
+    def _following(self) -> bool:
+        return self._follow_until is not None
+
+    def _keep_armed(self) -> None:
+        """Follows the focus for follow_idle_s more: the inspector frames every move meanwhile."""
+        self._follow_until = asyncio.get_running_loop().time() + self._timings.follow_idle_s
+        if self._idle is None or self._idle.done():
+            self._idle = asyncio.ensure_future(self._disarm_when_idle())
+
+    async def _disarm_when_idle(self) -> None:
+        assert self._focus_lock is not None and self._ax_lock is not None
+        loop = asyncio.get_running_loop()
+        while self._follow_until is not None:
+            if loop.time() < self._follow_until:
+                await asyncio.sleep(self._follow_until - loop.time())
+                continue
+            # After a read in progress, which may have asked for more.
+            async with self._focus_lock, self._ax_lock:
+                if self._follow_until is not None and loop.time() >= self._follow_until:
+                    self._follow_until = None
+                    _LOGGER.debug("No agent asked for the focus for %s s: not following it any more", self._timings.follow_idle_s)
+                    await self._drop_accessibility()
+
     async def _keep_following(self) -> None:
-        """Follows the focus from the tunnel's start, so moves made before the first read count."""
+        """Re-opens the session of an agent action, lost with its tunnel or ended by another inspector."""
+        if not self._following():
+            return
         try:
             await asyncio.wait_for(self._accessibility(self._tunnel.rsd), self._timings.call_timeout_s)
         except asyncio.CancelledError:
@@ -329,7 +399,7 @@ class Pmd3Backend:
         except Exception as exc:
             # Retried at every health check: only the first failure of a streak is news.
             log = _LOGGER.debug if self._follow_failing else _LOGGER.info
-            log("Cannot follow the focus yet (%s); the next focus read retries", _describe(exc))
+            log("Cannot follow the focus yet (%s); retrying at the next health check", _describe(exc))
             self._follow_failing = True
             return
         if self._follow_failing:
@@ -362,6 +432,7 @@ class Pmd3Backend:
         await self._drop_accessibility()
         tunnel, self._tunnel = self._tunnel, None
         session_closed, self._session_closed = self._session_closed, False
+        self._closed_at = None
         if session_closed:
             self._lost_session_pending = True
         if tunnel is not None:
@@ -461,10 +532,18 @@ class Pmd3Backend:
 
     # --- requests --------------------------------------------------------------------------
 
+    async def follow(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        self._keep_armed()
+        await self._with_rsd(self._accessibility)
+        return {}
+
     async def focus(self, params: Dict[str, Any]) -> Dict[str, Any]:
         assert self._focus_lock is not None
         # Aged from the request's arrival, as the plugin dates it from the send; the read takes ~0.2 s.
         received = asyncio.get_running_loop().time()
+        if self._following():
+            # An agent polling the focus, as wait --focus does, is still using it.
+            self._keep_armed()
         async with self._focus_lock:
             focus, moved_at = await self._with_rsd(self._read_focus)
         return {"focus": focus, "ageMs": round((received - moved_at) * 1000)}
@@ -479,6 +558,10 @@ class Pmd3Backend:
         if self._ax is not None and self._ax_rsd is rsd and self._follower is not None and not self._follower.done():
             return self._ax
         await self._drop_accessibility()
+        if self._closed_at is not None:
+            # The daemon learns of a session's end late, then untargets whichever session follows.
+            loop = asyncio.get_running_loop()
+            await asyncio.sleep(max(0.0, self._closed_at + self._timings.session_close_s - loop.time()))
         ax = self._pmd3.accessibilityaudit.AccessibilityAudit(rsd)
         await ax.__aenter__()
         self._ax, self._ax_rsd = ax, rsd
@@ -562,7 +645,7 @@ class Pmd3Backend:
             except Exception:
                 _LOGGER.debug("Resetting the accessibility inspector failed", exc_info=True)
             await self._close_quietly(ax)
-            self._session_closed = True
+            self._session_ended()
 
     @staticmethod
     async def _stop_following(ax: Any) -> None:
@@ -576,6 +659,8 @@ class Pmd3Backend:
         only when the focus is still the one it read: a move reads the new element, a screen change
         makes it unknown.
         """
+        if not self._following():
+            raise _focus_unknown(NOT_ARMED)
         try:
             ax = await self._accessibility(rsd)
             while True:
