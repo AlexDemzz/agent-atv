@@ -8,10 +8,11 @@ allowed-tools: Bash(agent-atv:*), Bash(npx agent-atv:*)
 
 The `agent-atv` CLI drives an Apple TV through the homebridge-agent-atv Homebridge plugin.
 
-Before running any other `agent-atv` command, load the usage guide that ships with the installed CLI:
+Before running any other `agent-atv` command, load the usage guide that ships with the installed CLI,
+and observe the TV in the same call:
 
 ```bash
-agent-atv skills get core
+agent-atv skills get core && agent-atv snapshot
 ```
 
 If `agent-atv` isn't installed or configured, the user sets it up once (the token is in the plugin

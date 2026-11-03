@@ -191,6 +191,8 @@ agent-atv state playing
 
 # Navigate
 agent-atv press down*2 right select
+agent-atv press down --until "Saison 2"   # steer to an element by name (screen reading)
+agent-atv press right --scan              # list a row, numbered from the focus
 agent-atv back
 agent-atv home
 
@@ -213,6 +215,7 @@ agent-atv snapshot --json
 | `state [field]` | one field: `power app playing keyboard volume connection seq` from the cached state, or `focus` |
 | `screenshot [path] [--max-width <px>] [--jpeg] [--if-changed]` | PNG of the TV screen, or a smaller JPEG |
 | `press <key[:action][*n]...>` | remote keys; `back` and `home` are shortcuts |
+| `press <arrow> --until <text>` / `press <arrow> --scan` | steer to an element by name / list a row (screen reading) |
 | `open <name\|bundle id\|url>` | launch and wait for the foreground (`--no-wait`, `--wait-ms`) |
 | `type <text>` / `fill <text>` / `clear` | append to / replace / empty the focused text field |
 | `wait [ms] [--app --playing --paused --playback --power --keyboard --no-keyboard --text --focus --idle --timeout]` | wait until every condition holds |
@@ -276,12 +279,12 @@ pymobiledevice3 (`remote_<identifier>.plist`) can be copied into
 `<storage>/agent-atv/pmd3-home/.local/share/pymobiledevice3/` (owned by the Homebridge user, mode 0600)
 instead of pairing again.
 
-Reading the focus takes about 0.2 s; `--settle` waits up to 1 s for it to settle. The Apple TV reports
+An arrow key with `--settle` answers in about 0.3 s on a Pi, other keys within about 1 s. The Apple TV reports
 the focus only when it moves, and the plugin follows it only around agent actions: from an action with
 `--settle` (or a `wait --focus`) until about 15 s after the last one. So the plugin says the focus is
-not known rather than guess: outside those actions (`state focus` or `snapshot` on their own), after
-the screen, the app or the playback changed, and after a key that moved nothing, until the next move
-made with `--settle`. A 4K screenshot takes
+not known rather than guess: outside those actions (`state focus` or `snapshot` on their own), and
+after the screen, the app or the playback changed, until the next move made with `--settle`. A key that
+moved nothing says `no move reported`. A 4K screenshot takes
 up to about 15 s on a Pi depending on its size (frames reach 30 MB), so agents use
 `screenshot --if-changed`, and `--max-width 1280 --jpeg` (about 110 KB) when the full resolution
 isn't needed, which matters most over a slow remote link. DRM-protected video captures black.

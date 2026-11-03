@@ -1,6 +1,6 @@
 ---
 name: core
-description: agent-atv usage guide for driving or inspecting an Apple TV - the observe, act, observe loop with --settle focus feedback, waits that fit each change, search and playback recipes, screenshots, pairing and safety rules. Load it before running any agent-atv command.
+description: agent-atv usage guide for driving or inspecting an Apple TV - the observe, act, observe loop, steering to an element with --until, listing a row with --scan, --settle focus feedback, waits that fit each change, search and playback recipes, screenshots, pairing and safety rules. Load it before running any agent-atv command.
 allowed-tools: Bash(agent-atv:*), Bash(npx agent-atv:*)
 ---
 
@@ -11,18 +11,34 @@ commands and flags; this guide covers what `--help` and the CLI's own output can
 
 ## The loop
 
-Every task runs the same loop: **observe, act, observe**.
+Every task runs the same loop: **observe, act, observe**, in as few turns as you can. A turn of yours
+costs seconds; a key press costs the TV a tenth of one. So hand the key-by-key work to the CLI:
 
 ```bash
-agent-atv snapshot                  # observe
-agent-atv press down --settle       # act, then read the Focus: line it prints
-agent-atv press select --settle     # steer by that line, one key at a time
-agent-atv wait --app Netflix        # when the action changes state, wait for that change
+agent-atv snapshot                               # observe
+agent-atv press down --until "Stranger Things"   # steer to an element by its name, in one command
+agent-atv press right --scan                     # or list a row, then plan from it
+agent-atv press 'left*2' select --settle         # chain the keys you can plan; read where they led
+agent-atv wait --playing                         # wait for the change the action causes
 ```
+
+- **`--until <text>`** presses one arrow, one key at a time, and stops on the first element whose
+  label, value or identifier contains the text (case and accents ignored). When the element is not
+  that way, it lists what it passed and says where to look next.
+- **`--scan`** presses one arrow until the focus stops moving and numbers every element from where the
+  focus started: `0 "Netflix"`, `1 "YouTube"`, ... `3 "Plex"  <- focus`. Element 1 is then
+  `press 'left*2'` away.
+- **Chain** what you are sure of: several keys in one `press` (`press down down select --settle`),
+  several commands joined with `&&`. `--settle` reads the focus once, after the last key.
+- **One key with `--settle`** is for a screen you have no picture of yet: its `Focus:` line is the
+  only thing that tells you where the highlight is.
+
+Write the text as the TV shows it, in its language: a French Apple TV shows "Saison 2" and
+"Épisode 5". These commands press arrows only, never `select`.
 
 Actions are silent: they print their own line once the plugin has sent them, and only `open` waits,
 for the app to reach the foreground. `--settle` (on `press`, `back`, `home`, `open`, `type`, `fill`,
-`clear`) also waits for the focus to settle and prints the element it landed on:
+`clear`) also prints the element the focus landed on:
 
 ```
 $ agent-atv press right --settle
@@ -30,13 +46,11 @@ pressed right
 Focus: "Netflix" (id app-icon/com.netflix.Netflix)
 ```
 
-That `Focus:` line is your feedback inside apps, the way a sighted user watches the highlight move:
-add `--settle` whenever the next step depends on where the focus is, and leave it off for keys whose
-effect the state shows (`play_pause`, then `wait --playing`). Only the focused element is readable
-(label, value, identifier); the rest of the screen is only in a `screenshot`. `snapshot` shows the
-focus too, and `state focus` reads it alone, but the plugin follows the focus only around your
-actions: up to about 15 s after the last `--settle` action or `wait --focus`. Before that, or later,
-they say the focus is not known; move it with `--settle` (`press down --settle`) to learn it.
+Only the focused element is readable (label, value, identifier); the rest of the screen is only in a
+`screenshot`. The plugin follows the focus only around your actions: up to about 15 s after the last
+action that read it. Start acting right after `snapshot`: `--until`, `--scan` and `--settle` learn
+the focus by moving it. Leave `--settle` off keys whose effect the state shows (`play_pause`, then
+`wait --playing`).
 
 The state an action returns is the plugin's cache at that moment and can lag (`volume up` may print
 the old level), so read state from the next `wait` or `snapshot`.
@@ -69,19 +83,19 @@ Several flags combine with AND. A bare `wait 2000` just sleeps: keep it for when
 
 ## Recipes
 
-Search with the TV app's search:
+Search with the TV app's search, then steer on the show page:
 
 ```bash
-agent-atv open com.apple.TVSearch
-agent-atv wait --keyboard
-agent-atv fill "stranger things"
-agent-atv press down --settle         # Focus: names the first result
-agent-atv press select
+agent-atv open com.apple.TVSearch && agent-atv wait --keyboard && agent-atv fill "stranger things"
+agent-atv press down --settle            # Focus: names the first result
+agent-atv press select && agent-atv wait --idle 1500
+agent-atv press down --until "Saison 2"  # the season, then the episode, by their names
 ```
 
-In other apps, `press <key> --settle` until `Focus:` names their search field, `press select`,
-`wait --keyboard`, then `fill`. Apps with their own on-screen keyboard never report keyboard focus: `fill` exits 6, and the
-letters have to be picked with the d-pad, steering by `Focus:`.
+In other apps, `press <arrow> --until search` reaches their search field; `press select`,
+`wait --keyboard`, then `fill`. Apps with their own on-screen keyboard never report keyboard focus:
+`fill` exits 6, and the letters have to be picked with the d-pad: `--scan` the keyboard's rows once,
+then chain the moves.
 
 `back` goes up one level, `home` returns to the home screen. `seek +30` and `seek -10` read the
 current position first, so they need something playing or paused.
@@ -93,8 +107,9 @@ stops with `no matches found`. Text that starts with `-` goes after `--`: `agent
 
 ## Screenshots
 
-A capture takes 3 to 7 s and a 4K PNG weighs up to 30 MB. Use the `Focus:` line and `snapshot`
-unless the question is what the whole screen shows. Add `--max-width 1280 --jpeg` unless you need
+A capture takes 3 to 7 s and a 4K PNG weighs up to 30 MB. Use `--scan`, the `Focus:` line and
+`snapshot` unless the question is what the whole screen shows. On a screen you cannot place, one
+capture costs less than a run of single presses. Add `--max-width 1280 --jpeg` unless you need
 full resolution: about 100 KB instead of several MB. For repeat looks use `screenshot --if-changed`,
 which prints `unchanged <previous path>` when nothing changed. DRM-protected video captures black.
 

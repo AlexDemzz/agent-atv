@@ -29,8 +29,9 @@ agent-atv open com.apple.TVSearch        # act; actions print only their own lin
 agent-atv wait --keyboard                # wait
 agent-atv fill "stranger things"
 agent-atv press down --settle            # Focus: "Stranger Things" (id …), with screen reading
-agent-atv screenshot --if-changed        # look at the whole screen
 agent-atv press select
+agent-atv press down --until "Saison 2"  # steer to an element by name, one command
+agent-atv screenshot --if-changed        # look at the whole screen
 ```
 
 Every command accepts `--json` and prints one JSON line. Exit codes: 0 success, 1 failed, 2 usage or
