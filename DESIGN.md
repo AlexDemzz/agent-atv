@@ -785,8 +785,10 @@ per key. One plain arrow only (`up down left right` or their aliases, no count, 
 or `--interval`), else exit 2; `--max <n>` (1-100, default 20), only with them. First a cold
 `GET focus` (any error: start unknown), then one `POST keys` per press with `"focus": true`. The walk
 stops on the first element whose label, value or identifier contains the text, case and accents
-folded (`--until`; a start that matches presses nothing), on a press whose FocusReport has
-`moved: false` (`no_move`), on an element equal to the start or one already passed (`repeat`: a row
+folded, a number at either end of the text only whole (`episode 1` is not in `Episode 11`; `--until`;
+a start that matches presses nothing), on a press whose FocusReport has `moved: false` and the same
+element as before it (`no_move`: Netflix reads a whole row as one element whose value names the item,
+`Item 4 of 75`, and sends no move event within it, so a changed element counts as a move), on an element equal to the start or one already passed (`repeat`: a row
 that wraps around, or two tiles that read the same), or after `--max` presses (`max`). An unavailable
 report, or one without `moved` (a failed `follow`, an older plugin), stops it after that press
 (`unknown`): presses past it would be blind. The list of what it passed is printed, then the report's
@@ -1608,8 +1610,12 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
    unmeasured in apps: whether, after a move that sent no event, the daemon confirms the previous
    element after a layout change; a plain read would then show it, and `--settle` too, as not moved.
    `--until` and `--scan` stop on the first press that reports no move: in a screen that moves the
-   focus without an event they stop early and say `no move reported`; whether Netflix, Disney+ and
-   the TV app's season and episode rows report every move is to be measured. While an agent action has the worker follow the focus (§6.1 Focus
+   focus without an event they stop early and say `no move reported`. Measured on tvOS 27.2
+   (2026-11-03): the home screen, Netflix's profiles, title page, season list and episode list, and
+   Disney+'s profiles report every move; a Netflix carousel is one element whose value changes, with no
+   event (counted as a move by the CLI, but after the worker re-arms its focus stays unknown until a
+   move to another element); pressing past the top of a list can move the inspector onto a heading
+   (`Choisissez un profil`, `Qui est-ce ?`). The TV app and Disney+'s content rows are not measured. While an agent action has the worker follow the focus (§6.1 Focus
    following), each move, the user's own included, flashes the daemon's highlight for one round trip;
    the 15 s it stays armed after the last request is a guess, not a measurement.
    4K screenshots reach about 33 MB and take several seconds on a Pi (§6.1); `maxWidth` and

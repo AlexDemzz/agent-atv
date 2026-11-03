@@ -67,7 +67,8 @@ moves). `--json` carries it as `focus`: `{"available": true, "element": {"label"
 "identifier"}, "moved": true|false}` or `{"available": false, "code", "reason", "hint"}`.
 
 `--until` and `--scan` take one arrow and press it one key at a time with the settled focus. Besides
-the match, both stop when a press reports no move, when the focus reaches an element already seen (a
+the match, both stop when a press reports no move and leaves the same element (a press that changes
+the element's value, as in a Netflix row read as one element, counts as a move), when the focus reaches an element already seen (a
 row that wraps around, or two tiles that read the same), or after `--max` presses. A focus that cannot
 be read stops them after that press: the list so far, then the focus error's exit code and fix. The numbered list starts at `0` with the
 element focused before the first press, when the plugin knew it, and marks the focused one:

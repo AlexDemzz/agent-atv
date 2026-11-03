@@ -62,6 +62,16 @@ describe('press <arrow> --until <text>', () => {
     expect(keyRequests()).toHaveLength(2);
   });
 
+  it('matches a number only whole: "Episode 1" skips "Episode 11" and "Episode 10"', async () => {
+    presses(moved(tile('Épisode 12, Le retour')), moved(tile('Épisode 11, La fuite')), moved(tile('Épisode 10')), moved(tile('Épisode 1, Le départ')));
+
+    const result = await sandbox.run(['press', 'up', '--until', 'episode 1']);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Focus: "Épisode 1, Le départ"');
+    expect(keyRequests()).toHaveLength(4);
+  });
+
   it('presses nothing when the focused element already matches', async () => {
     startingAt(PLEX);
 
@@ -83,6 +93,24 @@ describe('press <arrow> --until <text>', () => {
     );
     expect(result.stderr).toContain('no move reported (the end of the row, or a screen that does not report moves) after press 3');
     expect(result.stderr).toContain('agent-atv press left --until "Arte"');
+  });
+
+  it('walks a row the app reads as one element whose value names the item, as Netflix does', async () => {
+    const row = (item: string) => ({ label: 'Gems for You', value: `${item}.\nItem of 75.`, identifier: 'carouselView' });
+    startingAt(row('Les Sisters'));
+    presses(stayed(row('The Middle')), stayed(row('Arte')), stayed(row('Arte')));
+
+    const result = await sandbox.run(['press', 'right', '--scan']);
+
+    expect(result.stdout).toBe(
+      [
+        'scanned right: 2 moves, then no move reported (the end of the row, or a screen that does not report moves) after press 3',
+        '0 "Gems for You" (id carouselView, value Les Sisters. Item of 75.)',
+        '1 "Gems for You" (id carouselView, value The Middle. Item of 75.)',
+        '2 "Gems for You" (id carouselView, value Arte. Item of 75.)  <- focus',
+        '',
+      ].join('\n'),
+    );
   });
 
   it('stops when the focus comes back to an element it passed: the row wraps around', async () => {

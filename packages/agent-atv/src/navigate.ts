@@ -31,9 +31,21 @@ export type PressArrow = (arrow: Arrow) => Promise<FocusReport | undefined>;
 
 const fold = (text: string): string => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 
+const DIGIT = /\d/;
+
+/** Whether `needle` is in `haystack` with any number at its edges whole: "episode 1" is not in "episode 11". */
+function containsWhole(haystack: string, needle: string): boolean {
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
+    const cutsBefore = DIGIT.test(needle[0]!) && DIGIT.test(haystack[at - 1] ?? '');
+    const cutsAfter = DIGIT.test(needle.at(-1)!) && DIGIT.test(haystack[at + needle.length] ?? '');
+    if (!cutsBefore && !cutsAfter) return true;
+  }
+  return false;
+}
+
 export function matches(element: FocusElement, text: string): boolean {
   const needle = fold(text);
-  return [element.label, element.value, element.identifier].some((field) => field !== null && fold(field).includes(needle));
+  return [element.label, element.value, element.identifier].some((field) => field !== null && containsWhole(fold(field), needle));
 }
 
 const same = (a: FocusElement, b: FocusElement): boolean =>
@@ -76,7 +88,10 @@ export async function walk(press: PressArrow, arrow: Arrow, start: FocusElement 
     if (!report?.available) return result('unknown', passed.at(-1) ?? start, report ?? NO_MOVED);
     if (report.moved === undefined) return result('unknown', passed.at(-1) ?? start, NO_MOVED);
     const { element } = report;
-    if (!report.moved) return result('no_move', element);
+    // Some apps read a whole row as one element whose value names the item (Netflix): no move event.
+    const previous = passed.at(-1) ?? start;
+    const changed = previous !== null && !same(previous, element);
+    if (!report.moved && !changed) return result('no_move', element);
     if ((start && same(start, element)) || passed.some((seen) => same(seen, element))) return result('repeat', element);
     passed.push(element);
     if (until !== undefined && matches(element, until)) return result('found', element);

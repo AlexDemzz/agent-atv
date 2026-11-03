@@ -33,7 +33,9 @@ agent-atv wait --playing                         # wait for the change the actio
   only thing that tells you where the highlight is.
 
 Write the text as the TV shows it, in its language: a French Apple TV shows "Saison 2" and
-"Épisode 5". These commands press arrows only, never `select`.
+"Épisode 5". A number in the text matches only whole: "Épisode 1" skips "Épisode 11". Elements with
+no label still have an id to match: Netflix episodes read `(id Episode-4)`, counted from 0, so that
+one is episode 5. These commands press arrows only, never `select`.
 
 Actions are silent: they print their own line once the plugin has sent them, and only `open` waits,
 for the app to reach the foreground. `--settle` (on `press`, `back`, `home`, `open`, `type`, `fill`,

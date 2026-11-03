@@ -138,7 +138,7 @@ export function formatFocus(element: FocusElement | null | undefined): string {
   if (!element) return 'unknown';
   const details = [
     element.identifier !== null ? `id ${element.identifier}` : null,
-    element.value !== null ? `value ${element.value}` : null,
+    element.value !== null ? `value ${element.value.replace(/\s*\n\s*/g, ' ')}` : null,
   ].filter((part) => part !== null);
   const label = element.label !== null ? JSON.stringify(element.label) : null;
   return [label, details.length > 0 ? `(${details.join(', ')})` : null].filter((part) => part !== null).join(' ') || 'unknown';
