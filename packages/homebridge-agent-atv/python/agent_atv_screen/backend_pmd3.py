@@ -36,6 +36,8 @@ SCREEN_CHANGE = "UIAccessibilityScreenChangedNotification"
 LAYOUT_CHANGE = "UIAccessibilityLayoutChangedNotification"
 # After a layout change the daemon names the element it still inspects, the focused one.
 PROPERTIES_CHANGED = "hostInspectorCurrentElementPropertiesChanged:"
+# Bounds how long a settled read waits for the focus to stop moving.
+SETTLE_QUIET_CAP_S = 1.0
 # Bounds the inspector reset of a session being dropped, often over a dead tunnel.
 INSPECTOR_RESET_S = 2.0
 NOT_FOLLOWED = "The focused element is not known yet: the Apple TV reports it only when the focus moves"
@@ -236,6 +238,10 @@ class Pmd3Backend:
         self._unknown: Optional[str] = NOT_FOLLOWED
         self._focused: Any = None
         self._moved_at = 0.0
+        # Focus moves reported so far, the baseline an action's settled read waits past.
+        self._moves = 0
+        # Set, then replaced, on every focus move.
+        self._moved = asyncio.Event()
         # Loop time until which an agent wants the focus followed, or None (§6.1 Focus following).
         self._follow_until: Optional[float] = None
         self._idle: Optional[asyncio.Task] = None
@@ -535,18 +541,57 @@ class Pmd3Backend:
     async def follow(self, params: Dict[str, Any]) -> Dict[str, Any]:
         self._keep_armed()
         await self._with_rsd(self._accessibility)
-        return {}
+        return {"moves": self._moves}
 
     async def focus(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """The focused element. With `afterMoves` (the count `follow` answered before an action), it
+        first waits up to `waitMs` for a later move, then until no move came for `quietMs`, and says
+        whether the focus `moved`."""
         assert self._focus_lock is not None
-        # Aged from the request's arrival, as the plugin dates it from the send; the read takes ~0.2 s.
+        # Aged from the request's arrival, as the plugin dates it from the send.
         received = asyncio.get_running_loop().time()
         if self._following():
             # An agent polling the focus, as wait --focus does, is still using it.
             self._keep_armed()
+        after = params.get("afterMoves")
+        moved = None
+        if after is not None:
+            if not self._following():
+                raise _focus_unknown(NOT_ARMED)
+            moved = await self._settle(after, params.get("waitMs", 1000) / 1000, params.get("quietMs", 150) / 1000)
         async with self._focus_lock:
             focus, moved_at = await self._with_rsd(self._read_focus)
-        return {"focus": focus, "ageMs": round((received - moved_at) * 1000)}
+        result: Dict[str, Any] = {"focus": focus, "ageMs": round((received - moved_at) * 1000)}
+        if moved is not None:
+            result["moved"] = moved
+        return result
+
+    async def _settle(self, after: int, wait_s: float, quiet_s: float) -> bool:
+        """Whether a move past `after` came within `wait_s`; if so, returns once none came for `quiet_s`."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_s
+        while self._moves <= after:
+            if not await self._next_move(deadline - loop.time()):
+                return False
+        # A grid that scrolls, or a row that loads, can move the focus again right after.
+        cap = loop.time() + SETTLE_QUIET_CAP_S
+        while await self._next_move(min(quiet_s, cap - loop.time())):
+            pass
+        return True
+
+    async def _next_move(self, timeout_s: float) -> bool:
+        if timeout_s <= 0:
+            return False
+        try:
+            await asyncio.wait_for(self._moved.wait(), timeout_s)
+        except asyncio.TimeoutError:
+            return False
+        return True
+
+    def _note_move(self) -> None:
+        self._moves += 1
+        moved, self._moved = self._moved, asyncio.Event()
+        moved.set()
 
     async def _accessibility(self, rsd: Any) -> Any:
         """One accessibility session per tunnel, following the focus from the moment it opens."""
@@ -619,6 +664,7 @@ class Pmd3Backend:
                     self._focused = getattr(_first(event.data), "element", None)
                     self._moved_at = asyncio.get_running_loop().time()
                     self._unknown = None
+                    self._note_move()
                     # The daemon highlights each newly focused element, whatever it was told before.
                     await ax.set_show_visuals(False)
         except asyncio.CancelledError:
@@ -669,7 +715,8 @@ class Pmd3Backend:
                 element, moved_at = self._focused, self._moved_at
                 if element is None:
                     raise _focus_unknown("The Apple TV reported a focus move without an element")
-                attributes = await ax.element_attributes(element.identifier, FOCUS_ATTRIBUTES)
+                values = await asyncio.gather(*(ax.element_attribute(element.identifier, name) for name in FOCUS_ATTRIBUTES))
+                attributes = dict(zip(FOCUS_ATTRIBUTES, values))
                 if self._unknown is None and self._focused is element and self._moved_at == moved_at:
                     break
         except BridgeError:

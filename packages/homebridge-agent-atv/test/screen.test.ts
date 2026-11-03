@@ -284,106 +284,69 @@ describe('GET /devices/:device/focus (P5)', () => {
 });
 
 describe('focus after actions (P5)', () => {
-  it('reports the focus once it settles: at least 300 ms after the action, two equal reads', async () => {
+  it('asks the worker for the move after the count it answered before the keys, within 350 ms for arrow keys', async () => {
     const { plugin, screen } = await screenPlugin();
-    screen.reads = [HOME_FOCUS, NETFLIX, NETFLIX];
+    screen.moves = 7;
+    screen.reads = [NETFLIX];
 
-    const started = Date.now();
-    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'right' }], focus: true });
+    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'right', count: 2 }], focus: true });
 
-    expect(response.body).toMatchObject({ ok: true, pressed: 1, focus: { available: true, element: NETFLIX } });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(300);
-    expect(screen.focusReads).toBe(3);
-  });
-
-  it('stops reading after about a second when the focus keeps moving', async () => {
-    const { plugin, screen } = await screenPlugin();
-    const moving = Array.from({ length: 200 }, (_, i) => ({ label: `tile ${i}`, value: null, identifier: `tile-${i}` }));
-    screen.reads = moving;
-
-    const started = Date.now();
-    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'right' }], focus: true });
-
-    expect(Date.now() - started).toBeLessThan(1500);
-    expect(response.body.focus.available).toBe(true);
-    expect(response.body.focus.element.label).toMatch(/^tile \d+$/);
+    expect(response.body).toMatchObject({ ok: true, pressed: 2, focus: { available: true, element: NETFLIX, moved: true } });
+    expect(screen.focusParams).toEqual([{ afterMoves: 7, waitMs: 350, quietMs: 150 }]);
   });
 
   it.each([
+    ['other keys', '/keys', { keys: [{ key: 'down' }, { key: 'select' }], focus: true }],
     ['open', '/open', { target: 'com.netflix.Netflix', waitMs: 0, focus: true }],
-    ['keyboard', '/keyboard', { op: 'clear', focus: true }],
-  ])('reports it after %s too', async (_name, route, body) => {
-    const { plugin, tv } = await screenPlugin();
-    tv.state.keyboard = { focus: 'focused', text: 'x' };
+  ])('gives %s a second for the move: a new screen takes longer to focus', async (_name, route, body) => {
+    const { plugin, screen } = await screenPlugin();
 
     const response = await plugin.post(`${base}${route}`, body);
 
-    expect(response.body.focus).toEqual({ available: true, element: HOME_FOCUS });
+    expect(response.body.focus).toEqual({ available: true, element: HOME_FOCUS, moved: true });
+    expect(screen.focusParams).toEqual([{ afterMoves: 0, waitMs: 1000, quietMs: 150 }]);
   });
 
-  it('says the focus is not known when tvOS reported no move after the keys', async () => {
+  it('reports the element still focused when the keys moved nothing', async () => {
     const { plugin, screen } = await screenPlugin();
-    screen.movedAt = Date.now() - 60_000;
+    screen.keysMove = false;
 
-    const started = Date.now();
+    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'left' }], focus: true });
+
+    expect(response.body.focus).toEqual({ available: true, element: HOME_FOCUS, moved: false });
+  });
+
+  it('says the focus is not known when the keys moved nothing and playback changed since the last move', async () => {
+    const { plugin, tv, screen } = await screenPlugin();
+    screen.movedAt = Date.now() - 5000;
+    screen.keysMove = false;
+    tv.state.playing = { ...idlePlaying(), state: 'loading', mediaType: 'video' };
+    tv.push();
+    await eventually(async () => (await plugin.get(`${base}/state`)).body.seq > 2);
+
+    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'left' }], focus: true });
+
+    expect(response.body.focus).toMatchObject({ available: false, code: 'FOCUS_UNKNOWN' });
+  });
+
+  it('says the focus is not known when the worker does not know it after the keys', async () => {
+    const { plugin, screen } = await screenPlugin();
+    screen.reads = [UNKNOWN];
+
     const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'select' }], focus: true });
 
     expect(response.status).toBe(200);
     expect(response.body.focus).toEqual({ available: false, code: 'FOCUS_UNKNOWN', reason: 'focus not known', hint: MOVE_HINT });
-    expect(Date.now() - started).toBeLessThan(1500);
   });
 
-  it('does not take a move made just before the keys for one they caused, however slow the reply', async () => {
-    const { plugin, screen } = await screenPlugin();
-    screen.movedAt = Date.now() - 20;
-    screen.replyDelayMs = 200;
-
-    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'select' }], focus: true });
-
-    expect(response.body.focus).toMatchObject({ available: false, code: 'FOCUS_UNKNOWN' });
-  });
-
-  it('waits within the settle window for a move tvOS reports late', async () => {
-    const { plugin, screen } = await screenPlugin();
-    screen.movedAt = Date.now() - 60_000;
-    setTimeout(() => {
-      screen.reads = [NETFLIX];
-      screen.movedAt = Date.now();
-    }, 500);
-
-    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'right' }], focus: true });
-
-    expect(response.body.focus).toEqual({ available: true, element: NETFLIX });
-  });
-
-  it('waits within the settle window while the focus is unknown after a screen change', async () => {
-    const { plugin, screen } = await screenPlugin();
-    screen.reads = [UNKNOWN];
-    setTimeout(() => (screen.reads = [NETFLIX]), 500);
-
-    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'select' }], focus: true });
-
-    expect(response.body.focus).toEqual({ available: true, element: NETFLIX });
-  });
-
-  it('never reports an element read before the screen changed, even when it was the last one', async () => {
-    const { plugin, screen } = await screenPlugin();
-    screen.reads = [HOME_FOCUS, UNKNOWN];
-
-    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'select' }], focus: true });
-
-    expect(response.body.focus).toMatchObject({ available: false, code: 'FOCUS_UNKNOWN' });
-  });
-
-  it('after typing, reports the element focused before (typing does not move the focus)', async () => {
+  it('after typing, reports the element focused before with a plain read (typing does not move the focus)', async () => {
     const { plugin, tv, screen } = await screenPlugin();
     tv.state.keyboard = { focus: 'focused', text: '' };
-    screen.movedAt = Date.now();
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
     const response = await plugin.post(`${base}/keyboard`, { op: 'append', text: 'a', focus: true });
 
     expect(response.body.focus).toEqual({ available: true, element: HOME_FOCUS });
+    expect(screen.focusParams).toEqual([{}]);
   });
 
   it('gives up on a focus read that hangs, within the settle cap', async () => {
@@ -395,7 +358,7 @@ describe('focus after actions (P5)', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.focus).toMatchObject({ available: false, code: 'SCREEN_UNAVAILABLE' });
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(2500);
   });
 
   it.each([
@@ -429,7 +392,7 @@ describe('focus after actions (P5)', () => {
     const sentBeforeFollow: number[] = [];
     worker.handle('follow', () => {
       sentBeforeFollow.push(bridge.calls(call).length);
-      return {};
+      return { moves: 0 };
     });
 
     const response = await plugin.post(`${base}${route}`, body);
@@ -439,7 +402,7 @@ describe('focus after actions (P5)', () => {
     expect(bridge.calls(call)).toHaveLength(1);
   });
 
-  it('still acts and reports the focus when the worker cannot follow it', async () => {
+  it('still acts and reports the focus with a plain read when the worker cannot follow it', async () => {
     const { plugin, worker, bridge } = await screenPlugin();
     worker.handle('follow', () => {
       throw new BridgeFailure('SCREEN_FAILED', 'The Apple TV did not answer: ConnectionResetError');

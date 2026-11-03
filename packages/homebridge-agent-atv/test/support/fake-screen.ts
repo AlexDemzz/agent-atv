@@ -75,6 +75,12 @@ export function installScreen(worker: FakeBridge, options: { paired?: boolean; i
     focusReads: 0,
     /** `follow` requests: the worker follows the focus only after one (DESIGN.md §6.1). */
     follows: 0,
+    /** Focus moves tvOS reported, the count `follow` answers. */
+    moves: 0,
+    /** Whether the keys of a settled read moved the focus (`moved` in its answer). */
+    keysMove: true,
+    /** The params of every focus read. */
+    focusParams: [] as Record<string, unknown>[],
     foreground: { kind: 'home' } as Foreground,
     /** How many next foreground reads find nothing but the shell in front (SCREEN_FAILED). */
     foregroundFailures: 0,
@@ -95,18 +101,19 @@ export function installScreen(worker: FakeBridge, options: { paired?: boolean; i
     .handle('follow', () => {
       requirePaired();
       screen.follows += 1;
-      return {};
+      return { moves: screen.moves };
     })
-    .handle('focus', async () => {
+    .handle('focus', async (params) => {
       requirePaired();
       screen.focusReads += 1;
+      screen.focusParams.push(params);
       const focus = screen.reads.length > 1 ? screen.reads.shift()! : screen.reads[0]!;
       if (focus === UNKNOWN) {
         throw new BridgeFailure('FOCUS_UNKNOWN', 'The focused element is not known yet: the Apple TV reports it only when the focus moves');
       }
       const ageMs = screen.movedAt === undefined ? 0 : Date.now() - screen.movedAt;
       if (screen.replyDelayMs) await new Promise((resolve) => setTimeout(resolve, screen.replyDelayMs));
-      return { focus, ageMs };
+      return params.afterMoves === undefined ? { focus, ageMs } : { focus, ageMs, moved: screen.keysMove };
     })
     .handle('foreground', () => {
       requirePaired();

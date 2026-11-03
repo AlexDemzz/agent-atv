@@ -77,7 +77,7 @@ class ScreenWorkerTestCase(unittest.IsolatedAsyncioTestCase):
     async def following(self) -> None:
         """What an agent action does first: the tunnel up, then the worker asked to follow the focus."""
         await self.connected()
-        self.assertEqual(await self.worker.call("follow"), {})
+        self.assertIn("moves", await self.worker.call("follow"))
 
     async def status(self, tunnel: str):
         while True:
@@ -373,6 +373,102 @@ class FocusTest(ScreenWorkerTestCase):
         await self.drain_events()
 
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
+
+    async def test_reads_the_label_value_and_identifier_in_one_round_trip(self) -> None:
+        await self.following()
+        await self.move_focus(ARROW)
+        self.pmd3.attributes_delay_s = 0.15
+
+        started = asyncio.get_running_loop().time()
+        await self.worker.call("focus")
+
+        self.assertLess(asyncio.get_running_loop().time() - started, 0.3)
+
+
+LAST = b"\x03last"
+SETTLE = {"waitMs": 300, "quietMs": 50}
+
+
+class SettleTest(ScreenWorkerTestCase):
+    """What an action that asked for the settled focus gets: the move its keys caused, or none."""
+
+    async def baseline(self) -> int:
+        await self.connected()
+        return (await self.worker.call("follow"))["moves"]
+
+    def move_later(self, delay_s: float, element: bytes) -> None:
+        asyncio.get_running_loop().call_later(delay_s, self.pmd3.move_focus, element)
+
+    async def test_follow_counts_the_focus_moves(self) -> None:
+        before = await self.baseline()
+
+        await self.move_focus(ARROW)
+
+        self.assertEqual((await self.worker.call("follow"))["moves"], before + 1)
+
+    async def test_answers_the_move_that_comes_after_the_baseline(self) -> None:
+        moves = await self.baseline()
+        self.move_later(0.1, ARROW)
+
+        read = await self.worker.call("focus", {"afterMoves": moves, **SETTLE})
+
+        self.assertEqual(read["focus"], ARROW_FOCUS)
+        self.assertTrue(read["moved"])
+
+    async def test_answers_once_the_focus_stops_moving(self) -> None:
+        moves = await self.baseline()
+        self.move_later(0.05, LAST)
+        self.move_later(0.08, ARROW)
+
+        read = await self.worker.call("focus", {"afterMoves": moves, **SETTLE})
+
+        self.assertEqual(read["focus"], ARROW_FOCUS)
+
+    async def test_without_a_move_in_time_answers_the_element_still_focused_as_not_moved(self) -> None:
+        await self.baseline()
+        await self.move_focus(ARROW)
+        moves = (await self.worker.call("follow"))["moves"]
+
+        started = asyncio.get_running_loop().time()
+        read = await self.worker.call("focus", {"afterMoves": moves, **SETTLE})
+
+        self.assertEqual(read["focus"], ARROW_FOCUS)
+        self.assertFalse(read["moved"])
+        self.assertGreaterEqual(asyncio.get_running_loop().time() - started, 0.3)
+
+    async def test_without_a_move_on_a_screen_that_changed_the_focus_is_unknown(self) -> None:
+        await self.baseline()
+        await self.move_focus(ARROW)
+        moves = (await self.worker.call("follow"))["moves"]
+        self.pmd3.post_notification("UIAccessibilityScreenChangedNotification")
+
+        error = await self.worker.error("focus", {"afterMoves": moves, **SETTLE})
+
+        self.assertEqual(error["code"], "FOCUS_UNKNOWN")
+
+    async def test_a_move_before_the_baseline_does_not_count(self) -> None:
+        await self.baseline()
+        await self.move_focus(LAST)
+        moves = (await self.worker.call("follow"))["moves"]
+        self.move_later(0.1, ARROW)
+
+        read = await self.worker.call("focus", {"afterMoves": moves, **SETTLE})
+
+        self.assertEqual(read["focus"], ARROW_FOCUS)
+        self.assertTrue(read["moved"])
+
+    async def test_a_plain_read_says_nothing_about_a_move(self) -> None:
+        await self.baseline()
+        await self.move_focus(ARROW)
+
+        self.assertNotIn("moved", await self.worker.call("focus"))
+
+    async def test_rejects_a_baseline_that_is_not_a_count(self) -> None:
+        await self.baseline()
+
+        error = await self.worker.error("focus", {"afterMoves": "3", **SETTLE})
+
+        self.assertEqual((error["code"], error["details"]["field"]), ("BAD_REQUEST", "afterMoves"))
 
     async def test_the_focus_is_unknown_again_after_another_inspector_takes_over_then_followed_again(self) -> None:
         await self.following()
@@ -962,7 +1058,7 @@ class FakeWorkerStdioTest(unittest.TestCase):
         self.assertEqual(worker.request("follow")["error"]["code"], "SCREEN_NOT_PAIRED")
         self.assertTrue(worker.request("pair.begin")["ok"])
         self.assertEqual(worker.request("pair.pin", {"pin": "1234"})["result"], {"identifier": "FAKE-REMOTEPAIRING-0001"})
-        self.assertEqual(worker.request("follow")["result"], {})
+        self.assertEqual(worker.request("follow")["result"], {"moves": 0})
         # Its focus has always just moved, so a focus read after any key press finds it.
         self.assertEqual(
             worker.request("focus")["result"],

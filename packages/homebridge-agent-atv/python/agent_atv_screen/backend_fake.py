@@ -58,11 +58,14 @@ class FakeBackend:
 
     async def follow(self, params: Dict[str, Any]) -> Dict[str, Any]:
         self._require_paired()
-        return {}
+        return {"moves": 0}
 
     async def focus(self, params: Dict[str, Any]) -> Dict[str, Any]:
         self._require_paired()
-        return {"focus": dict(FAKE_FOCUS), "ageMs": 0}
+        result: Dict[str, Any] = {"focus": dict(FAKE_FOCUS), "ageMs": 0}
+        if params.get("afterMoves") is not None:
+            result["moved"] = True
+        return result
 
     async def foreground(self, params: Dict[str, Any]) -> Dict[str, Any]:
         self._require_paired()

@@ -24,8 +24,17 @@ export interface Unavailable {
   hint: string;
 }
 
-/** What actions, `state?focus=1` and wait return about the focused element; never an error. */
-export type FocusReport = { available: true; element: FocusElement } | Unavailable;
+/**
+ * What actions, `state?focus=1` and wait return about the focused element; never an error. After
+ * an action, `moved` says whether its keys moved the focus.
+ */
+export type FocusReport = { available: true; element: FocusElement; moved?: boolean } | Unavailable;
+
+/** A settled read: the move count `follow` answered before the action, and how long to wait past it. */
+export interface Settle {
+  moves: number;
+  windowMs: number;
+}
 
 /** What tvOS shows, from the worker's `foreground` read (DESIGN.md §6.2). */
 export type Foreground =
@@ -41,6 +50,8 @@ export type AppReport = ({ available: true } & Foreground) | Unavailable;
 export interface FocusRead {
   element: FocusElement;
   movedAtMs: number;
+  /** After a settled read: whether a move came past its baseline. */
+  moved?: boolean;
 }
 
 export type Tunnel = 'unpaired' | 'connecting' | 'connected' | 'disconnected';
@@ -110,13 +121,10 @@ const TIMEOUTS: Record<string, number> = {
 };
 const DEFAULT_TIMEOUT_MS = 10 * SECOND;
 const READY_WAIT_MS = 20 * SECOND;
-/** The worker learns a focus move about 50 ms after the key; a focus read takes about 0.2 s on a Pi. */
-const SETTLE_MS = 300;
-const SETTLE_CAP_MS = 1000;
-/** A read that has to reopen the worker's accessibility session takes 0.4 to 0.6 s on a Pi. */
-const FIRST_READ_MS = 1000;
-/** Between settle reads that found the focus unknown or not moved yet. */
-const SETTLE_RETRY_MS = 100;
+/** After the first move, the worker waits until none came for this long: a grid may scroll on. */
+const SETTLE_QUIET_MS = 150;
+/** Past the window: up to 1 s of moves still coming, then a read (about 70 ms on a Pi). */
+const SETTLE_READ_MS = 1500;
 const REPORT_READ_MS = 5000;
 /** Opening the worker's accessibility session takes about 0.5 s on a Pi, plus up to 1 s after a close. */
 const FOLLOW_MS = 2000;
@@ -131,10 +139,6 @@ const REASONS: Record<string, string> = {
   FOCUS_UNKNOWN: 'focus not known',
   DEVICE_OFF: 'Apple TV off',
 };
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const sameElement = (a: FocusElement, b: FocusElement): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 export const isFocusUnknown = (error: unknown): error is ApiError => error instanceof ApiError && error.code === 'FOCUS_UNKNOWN';
 
@@ -255,11 +259,12 @@ export class ScreenService {
     return { focus: element, durationMs: Date.now() - started };
   }
 
-  async read(device: Device): Promise<FocusRead> {
+  async read(device: Device, settle?: Settle): Promise<FocusRead> {
     const sentAt = Date.now();
-    const { focus, ageMs } = await this.request<{ focus: FocusElement; ageMs: number }>(device, 'focus');
+    const params = settle ? { afterMoves: settle.moves, waitMs: settle.windowMs, quietMs: SETTLE_QUIET_MS } : {};
+    const { focus, ageMs, moved } = await this.request<{ focus: FocusElement; ageMs: number; moved?: boolean }>(device, 'focus', params);
     // From the send time, the move can only come out earlier than it was: towards unknown.
-    const read = { element: focus, movedAtMs: sentAt - ageMs };
+    const read: FocusRead = { element: focus, movedAtMs: sentAt - ageMs, ...(moved === undefined ? {} : { moved }) };
     if (!this.isCurrent(device, read)) {
       throw new ApiError('FOCUS_UNKNOWN', `The app or playback on ${this.options.devices.displayName(device)} changed after the focus last moved`, {});
     }
@@ -274,13 +279,15 @@ export class ScreenService {
   /**
    * The focused element, as a report that never throws. Only uses a tunnel that is already up, so
    * an unpaired or reconnecting screen costs the action nothing. With `settle` (after an action),
-   * see settled(); `movedSince` then rejects a focus tvOS reported before the action.
+   * the worker answers the first move past the baseline once the focus stops moving, or the
+   * element still focused when none came within the window.
    */
-  async report(device: Device, { settle, movedSince }: { settle: boolean; movedSince?: number }): Promise<FocusReport> {
+  async report(device: Device, settle?: Settle): Promise<FocusReport> {
     try {
       this.requireTunnel(device);
-      const element = settle ? await this.settled(device, movedSince) : (await this.readWithin(device, REPORT_READ_MS)).element;
-      return { available: true, element };
+      const ms = settle ? settle.windowMs + SETTLE_READ_MS : REPORT_READ_MS;
+      const { element, moved } = await this.within(device, this.read(device, settle), ms, 'focus');
+      return { available: true, element, ...(moved === undefined ? {} : { moved }) };
     } catch (error) {
       return this.unavailable(device, error, 'focus read failed');
     }
@@ -289,14 +296,17 @@ export class ScreenService {
   /**
    * Asks the worker to follow the focus (DESIGN.md §6.1), before an action whose move must be
    * reported: it frames every focus move on the TV meanwhile, so only around agent actions.
-   * Best effort, like report(): bounded, never throws, nothing without a tunnel already up.
+   * Answers the worker's move count, the baseline of the settled read after the action. Best
+   * effort, like report(): bounded, never throws, nothing without a tunnel already up.
    */
-  async follow(device: Device): Promise<void> {
+  async follow(device: Device): Promise<number | undefined> {
     try {
       this.requireTunnel(device);
-      await this.within(device, this.request(device, 'follow'), FOLLOW_MS, 'follow');
+      const { moves } = await this.within(device, this.request<{ moves?: number }>(device, 'follow'), FOLLOW_MS, 'follow');
+      return moves;
     } catch (error) {
       this.options.log.debug(`${this.options.devices.displayName(device)}: cannot follow the focus: ${errorMessage(error)}`);
+      return undefined;
     }
   }
 
@@ -326,45 +336,6 @@ export class ScreenService {
     const apiError = toApiError(error, this.options.devices.displayName(device));
     const reason = apiError.code === 'SCREEN_FAILED' ? failed : (REASONS[apiError.code] ?? apiError.message);
     return { available: false, code: apiError.code, reason, hint: apiError.hint };
-  }
-
-  /**
-   * Waits SETTLE_MS, then reads until two reads agree or SETTLE_CAP_MS passed. A read that finds
-   * the focus unknown, or not moved since `movedSince`, is retried within that window and drops
-   * the reads before it: they may show an earlier screen.
-   */
-  private async settled(device: Device, movedSince: number | undefined): Promise<FocusElement> {
-    const deadline = Date.now() + SETTLE_CAP_MS;
-    await sleep(SETTLE_MS);
-    let last: FocusRead | undefined;
-    let notKnown = new ApiError('FOCUS_UNKNOWN', `${this.options.devices.displayName(device)} reported no focus move after the action`, {});
-    for (let first = true; first || Date.now() < deadline; first = false) {
-      let read: FocusRead;
-      try {
-        read = await this.readWithin(device, first ? Math.max(FIRST_READ_MS, deadline - Date.now()) : deadline - Date.now());
-      } catch (error) {
-        if (!isFocusUnknown(error)) {
-          if (first) throw error;
-          break;
-        }
-        [notKnown, last] = [error, undefined];
-        await sleep(SETTLE_RETRY_MS);
-        continue;
-      }
-      if (movedSince !== undefined && read.movedAtMs < movedSince) {
-        last = undefined;
-        await sleep(SETTLE_RETRY_MS);
-        continue;
-      }
-      if (last && sameElement(last.element, read.element)) return read.element;
-      last = read;
-    }
-    if (last) return last.element;
-    throw notKnown;
-  }
-
-  private readWithin(device: Device, ms: number): Promise<FocusRead> {
-    return this.within(device, this.read(device), ms, 'focus');
   }
 
   private within<T>(device: Device, read: Promise<T>, ms: number, what: string): Promise<T> {

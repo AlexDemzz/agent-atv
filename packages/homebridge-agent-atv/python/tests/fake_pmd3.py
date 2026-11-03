@@ -326,14 +326,14 @@ class AccessibilityAudit:
         while True:
             yield await self.fake_events.get()
 
-    async def element_attributes(self, element: bytes, attributes: List[str]) -> Dict[str, Any]:
+    async def element_attribute(self, element: bytes, attribute: str) -> Any:
+        """One round trip each; replies are matched by message id, so reads may overlap."""
         _require_open(self._rsd)
         fake = _fake()
-        fake.ax_calls.append(("element_attributes", (element, tuple(attributes))))
+        fake.ax_calls.append(("element_attribute", (element, attribute)))
         if fake.attributes_delay_s:
             await asyncio.sleep(fake.attributes_delay_s)
-        known = fake.elements.get(element, {})
-        return {name: known.get(name) for name in attributes}
+        return fake.elements.get(element, {}).get(attribute)
 
 
 class DvtProvider:
@@ -475,7 +475,7 @@ class FakePmd3:
         self.reachable = True
         self.tunnel_delay_s = 0.0
         self.capture_delay_s = 0.0
-        # How long an element_attributes read takes (about 0.2 s on a Pi).
+        # How long one element_attribute read takes (about 70 ms on a Pi).
         self.attributes_delay_s = 0.0
         self.fail_next: List[BaseException] = []
         # Every accessibility call fails with it while set.

@@ -23,7 +23,11 @@ _CHECKS: Dict[str, Dict[str, Callable[[Any], bool]]] = {
     "ping": {},
     "shutdown": {},
     "follow": {},
-    "focus": {},
+    "focus": {
+        "afterMoves": lambda v: v is None or (type(v) is int and v >= 0),
+        "waitMs": lambda v: v is None or (type(v) is int and 0 <= v <= 10_000),
+        "quietMs": lambda v: v is None or (type(v) is int and 0 <= v <= 1_000),
+    },
     "foreground": {},
     "screenshot": {
         "path": lambda v: isinstance(v, str) and os.path.isabs(v),
