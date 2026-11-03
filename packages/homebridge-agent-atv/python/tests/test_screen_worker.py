@@ -246,6 +246,16 @@ class FocusTest(ScreenWorkerTestCase):
 
         self.assertIsNone(self.pmd3.highlighted)
 
+    async def test_clears_the_highlight_the_apple_tv_draws_again_on_a_layout_change(self) -> None:
+        await self.connected()
+        await self.move_focus(ARROW)
+
+        self.pmd3.relayout()
+        self.assertEqual(self.pmd3.highlighted, ARROW)
+        await self.drain_events()
+
+        self.assertIsNone(self.pmd3.highlighted)
+
     async def test_keeps_one_accessibility_session_across_reads(self) -> None:
         await self.connected()
         await self.move_focus(ARROW)

@@ -526,13 +526,12 @@ class Pmd3Backend:
                     self._unknown, self._focused = SCREEN_CHANGED, None
                 elif event.name == NOTIFICATION and _first(event.data) == LAYOUT_CHANGE and self._unknown is None:
                     self._unknown = LAYOUT_CHANGED
-                elif (
-                    event.name == PROPERTIES_CHANGED
-                    and self._unknown == LAYOUT_CHANGED
-                    and _same_element(getattr(_first(event.data), "element", None), self._focused)
-                ):
-                    # The move keeps its time.
-                    self._unknown = None
+                elif event.name == PROPERTIES_CHANGED:
+                    if self._unknown == LAYOUT_CHANGED and _same_element(getattr(_first(event.data), "element", None), self._focused):
+                        # The move keeps its time.
+                        self._unknown = None
+                    # The daemon highlights the element it names again.
+                    await ax.set_show_visuals(False)
                 elif event.name == FOCUS_CHANGED:
                     self._focused = getattr(_first(event.data), "element", None)
                     self._moved_at = asyncio.get_running_loop().time()
