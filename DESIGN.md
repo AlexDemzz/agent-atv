@@ -1203,7 +1203,9 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   Pi. All three steps are needed: without `deviceDidGetTargeted` or without type 2 no event comes.
 - **What the daemon does meanwhile**: it highlights each newly focused element on the TV (a green
   frame) even with `deviceInspectorShowVisuals: 0` sent before, so the worker sends it again after
-  every event and the frame shows only for that round trip. `deviceEnableHighlight: 0` and turning the
+  every focus move and every `hostInspectorCurrentElementPropertiesChanged:` (the daemon highlights the
+  element it names again, about every 30 s at rest on the home screen's top shelf), and the frame
+  shows only for that round trip. `deviceEnableHighlight: 0` and turning the
   inspector off do not help; the latter switches the type to 0, after which the events no longer track
   the focus. The type and the highlight belong to the daemon and outlive the session: on shutdown
   the worker sets the type back to 0 and the visuals off. A worker killed without that leaves the TV
