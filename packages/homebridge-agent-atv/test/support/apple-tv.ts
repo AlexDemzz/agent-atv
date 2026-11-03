@@ -57,6 +57,8 @@ export interface AppleTvOptions {
   companionWorksForAirplay?: boolean;
   /** Called with each app it launches (bundle id targets), as it comes to the foreground. */
   onLaunch?: (app: { bundleId: string; name: string }) => void;
+  /** A link launched: the app that opens it, if any, takes the foreground through this. */
+  onLaunchUrl?: (url: string) => void;
 }
 
 /**
@@ -145,7 +147,10 @@ export function installAppleTv(bridge: FakeBridge, options: AppleTvOptions = {})
     .handle('app.launch', (params) => {
       requireConnected(params);
       const target = String(params.target);
-      if (target.includes('://')) return {};
+      if (target.includes('://')) {
+        if (options.onLaunchUrl) setTimeout(() => options.onLaunchUrl?.(target), 20);
+        return {};
+      }
       const app = APPS.find((a) => a.bundleId === target);
       if (!app) throw new BridgeFailure('LAUNCH_FAILED', `Cannot launch ${target}`, { target });
       if (options.onLaunch) setTimeout(() => options.onLaunch?.(app), 20);

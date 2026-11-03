@@ -39,7 +39,7 @@ export const open: Command = {
       const unknown = response.foregroundUnknown;
       let suffix = '';
       if (unknown) suffix = ` (foreground app not known, ${unknown.reason}: ${unknown.hint})`;
-      else if (waitMs > 0 && !target.includes('://')) suffix = ` (not in foreground after ${waitMs}ms)`;
+      else if (waitMs > 0) suffix = target.includes('://') ? ` (no app in the foreground after ${waitMs}ms: look with agent-atv snapshot --screenshot --max-width 1280 --jpeg)` : ` (not in foreground after ${waitMs}ms)`;
       ctx.print(`launched ${launched}${suffix}`);
     }
     printSettledFocus(ctx, response.focus);

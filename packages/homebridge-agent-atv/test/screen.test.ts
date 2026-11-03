@@ -26,6 +26,8 @@ async function screenPlugin(
     env?: NodeJS.ProcessEnv;
     /** How long a launched app takes to reach the foreground; null: it never does. */
     launchMs?: number | null;
+    /** The app a launched link brings to the foreground, after launchMs. */
+    linkApp?: { bundleId: string; name: string };
   } = {},
 ) {
   const storagePath = await makeStorage();
@@ -35,6 +37,10 @@ async function screenPlugin(
   const tv = installAppleTv(bridge, {
     onLaunch: (app) => {
       if (launchMs !== null) setTimeout(() => (screen.foreground = { kind: 'app', ...app }), launchMs);
+    },
+    onLaunchUrl: () => {
+      const app = options.linkApp;
+      if (app && launchMs !== null) setTimeout(() => (screen.foreground = { kind: 'app', ...app }), launchMs);
     },
   });
   const worker = new FakeBridge();
@@ -729,6 +735,39 @@ describe('foreground app in the state (P5)', () => {
       reason: 'screen reading not paired',
       hint: `run agent-atv pair ${DEVICE_ID} --screen`,
     });
+  });
+});
+
+const TV_APP = { bundleId: 'com.apple.TVWatchList', name: 'TV' };
+const SHOW_LINK = 'https://tv.apple.com/show/severance/umc.cmc.1srk2goyh2q2zdxcx605w8vtx';
+
+describe('open a link (P5)', () => {
+  it('waits for the app the link opens to take the foreground, and names it', async () => {
+    const { plugin } = await screenPlugin({ launchMs: 600, linkApp: TV_APP });
+
+    const response = await plugin.post(`${base}/open`, { target: SHOW_LINK });
+
+    expect(response.body).toMatchObject({ ok: true, foreground: true, app: TV_APP });
+  });
+
+  it('takes the app already in front after 3 s: the link may open in it', async () => {
+    const { plugin, screen } = await screenPlugin({ launchMs: null });
+    screen.foreground = { kind: 'app', ...TV_APP };
+    const started = Date.now();
+
+    const response = await plugin.post(`${base}/open`, { target: SHOW_LINK });
+
+    expect(response.body).toMatchObject({ ok: true, foreground: true, app: TV_APP });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2900);
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  it('answers foreground false when no app takes the foreground within waitMs', async () => {
+    const { plugin } = await screenPlugin({ launchMs: null });
+
+    const response = await plugin.post(`${base}/open`, { target: SHOW_LINK, waitMs: 600 });
+
+    expect(response.body).toMatchObject({ ok: true, foreground: false, app: null });
   });
 });
 

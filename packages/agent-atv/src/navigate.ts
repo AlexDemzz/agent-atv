@@ -92,8 +92,11 @@ export async function walk(press: PressArrow, arrow: Arrow, start: FocusElement 
     const previous = passed.at(-1) ?? start;
     const changed = previous !== null && !same(previous, element);
     if (!report.moved && !changed) return result('no_move', element);
-    if ((start && same(start, element)) || passed.some((seen) => same(seen, element))) return result('repeat', element);
+    // Two tiles may read the same (a podcast and a show of one name): a wrap-around repeats a pair.
+    const seen = start ? [start, ...passed] : passed;
+    const wraps = previous !== null && seen.some((el, i) => i > 0 && same(el, element) && same(seen[i - 1]!, previous));
     passed.push(element);
+    if (wraps) return result('repeat', element);
     if (until !== undefined && matches(element, until)) return result('found', element);
   }
   return result('max', passed.at(-1) ?? start);
@@ -106,7 +109,7 @@ function stopReason(w: Walk): string {
     case 'no_move':
       return `${NO_MOVE} after press ${w.presses}`;
     case 'repeat':
-      return `press ${w.presses} reached ${formatFocus(w.focus)} again (a row that wraps around, or two tiles that read the same)`;
+      return `press ${w.presses} reached ${formatFocus(w.focus)} again: the row wraps around`;
     case 'max':
       return `stopped after --max ${w.presses} presses`;
     default:
@@ -118,7 +121,7 @@ function stopReason(w: Walk): string {
 export function walkLines(w: Walk): string[] {
   const elements = [...(w.start ? [w.start] : []), ...w.passed];
   const offset = w.start ? 0 : 1;
-  const focused = w.focus ? elements.findIndex((element) => same(element, w.focus!)) : -1;
+  const focused = w.focus ? elements.findLastIndex((element) => same(element, w.focus!)) : -1;
   return elements.map((element, i) => `${i + offset} ${formatFocus(element)}${i === focused ? '  <- focus' : ''}`);
 }
 

@@ -70,6 +70,38 @@ async function withFocus(deps: RouteDeps, device: Device, wanted: boolean, settl
 const settleAfter = (moves: number | undefined, windowMs = SCREEN_WINDOW_MS): Settle | undefined =>
   moves === undefined ? undefined : { moves, windowMs };
 
+/** A link may open in the app already in front, which then never changes: take that app after this long. */
+const LINK_SAME_APP_MS = 3000;
+
+/**
+ * Launches a link and waits for the app that opens it: one that was not in front before. When an app
+ * was already in front, after LINK_SAME_APP_MS the app in front is taken for the one that opened it.
+ */
+async function openLink(
+  deps: RouteDeps,
+  device: Device,
+  target: string,
+  waitMs: number,
+  signal: AbortSignal,
+  focusWanted: boolean,
+  moves: number | undefined,
+): Promise<Record<string, unknown>> {
+  const { devices, screen } = deps;
+  const before = waitMs > 0 ? await screen.appReport(device) : undefined;
+  const front = before?.available && before.kind === 'app' ? before.bundleId : undefined;
+  await devices.call(device, 'app.launch', { target });
+  let result: { foreground: boolean | null; seen?: Foreground; unknown?: ScreenProblem } = { foreground: false };
+  if (waitMs > 0) {
+    const another = (seen: Foreground) => seen.kind === 'app' && seen.bundleId !== front;
+    result = await waitForeground(screen, device, another, 'agent-atv state app', front ? Math.min(waitMs, LINK_SAME_APP_MS) : waitMs, signal);
+    if (!result.foreground && front && result.seen?.kind === 'app') result = { foreground: true, seen: result.seen };
+  }
+  const { foreground, seen, unknown } = result;
+  const focus = await withFocus(deps, device, focusWanted, settleAfter(moves));
+  const app = foreground && seen?.kind === 'app' ? { bundleId: seen.bundleId, name: seen.name } : null;
+  return { ok: true, app, foreground, ...(unknown ? { foregroundUnknown: unknown } : {}), ...focus, state: devices.pluginState(device) };
+}
+
 const MAX_WIDTH = { min: 160, max: 3840 };
 
 function screenshotOptions(body: Body): CaptureOptions {
@@ -139,10 +171,12 @@ const isPassing = (screen: ScreenService, device: Device, report: Unavailable): 
  * Reads the foreground app until `bundleId` is in front or `waitMs` passed. `true`/`false` once a
  * read answered; `null` with why when none did (screen reading off, not paired, not connected).
  */
+/** `wanted`: what in front ends the wait; `recheck`: how to check later without opening again. */
 async function waitForeground(
   screen: ScreenService,
   device: Device,
-  bundleId: string,
+  wanted: (foreground: Foreground) => boolean,
+  recheck: string,
   waitMs: number,
   signal: AbortSignal,
 ): Promise<{ foreground: boolean | null; seen?: Foreground; unknown?: ScreenProblem }> {
@@ -154,10 +188,10 @@ async function waitForeground(
     if (report.available) {
       const { available: _available, ...foreground } = report;
       seen = foreground;
-      if (seen.kind === 'app' && seen.bundleId === bundleId) return { foreground: true, seen };
+      if (wanted(seen)) return { foreground: true, seen };
     } else if (seen === undefined && !isPassing(screen, device, report)) {
       // Opening again would relaunch the app: check it instead once the tunnel is up.
-      const hint = report.code === 'SCREEN_UNAVAILABLE' ? `check in a few seconds with agent-atv wait --app ${bundleId}` : report.hint;
+      const hint = report.code === 'SCREEN_UNAVAILABLE' ? `check in a few seconds with ${recheck}` : report.hint;
       return { foreground: null, unknown: { code: report.code, reason: report.reason, hint } };
     }
     const now = Date.now();
@@ -334,9 +368,7 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         devices.requireConnected(device);
         const moves = focusWanted ? await deps.screen.follow(device) : undefined;
         if (target.includes('://')) {
-          await devices.call(device, 'app.launch', { target });
-          const focus = await withFocus(deps, device, focusWanted, settleAfter(moves));
-          return { json: { ok: true, app: null, foreground: false, ...focus, state: devices.pluginState(device) } };
+          return { json: await openLink(deps, device, target, waitMs, signal, focusWanted, moves) };
         }
         let app: App;
         if (BUNDLE_ID.test(target)) {
@@ -346,8 +378,9 @@ export function buildRoutes(deps: RouteDeps): Route[] {
           app = resolveAppName(await devices.listApps(device, false), target);
         }
         await devices.call(device, 'app.launch', { target: app.bundleId });
+        const isApp = (seen: Foreground) => seen.kind === 'app' && seen.bundleId === app.bundleId;
         const { foreground, seen, unknown } =
-          waitMs > 0 ? await waitForeground(deps.screen, device, app.bundleId, waitMs, signal) : { foreground: false };
+          waitMs > 0 ? await waitForeground(deps.screen, device, isApp, `agent-atv wait --app ${app.bundleId}`, waitMs, signal) : { foreground: false };
         const focus = await withFocus(deps, device, focusWanted, settleAfter(moves));
         const shown = foreground && seen?.kind === 'app' ? { bundleId: seen.bundleId, name: seen.name } : app;
         return {

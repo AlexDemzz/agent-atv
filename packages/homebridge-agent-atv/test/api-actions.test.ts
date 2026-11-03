@@ -82,12 +82,12 @@ describe('open (P1)', () => {
     expect(bridge.calls('app.launch')).toEqual([]);
   });
 
-  it('launches URLs without waiting', async () => {
+  it('launches URLs, and says without screen reading that it cannot tell which app opened them', async () => {
     const { plugin, bridge } = await connectedPlugin();
 
     const response = await plugin.post(`${base}/open`, { target: 'https://www.netflix.com/title/80057281' });
 
-    expect(response.body).toMatchObject({ ok: true, app: null, foreground: false });
+    expect(response.body).toMatchObject({ ok: true, app: null, foreground: null, foregroundUnknown: { code: 'SCREEN_NOT_CONFIGURED' } });
     expect(bridge.calls('app.launch')).toEqual([{ device: DEVICE_ID, target: 'https://www.netflix.com/title/80057281' }]);
   });
 

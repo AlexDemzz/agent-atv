@@ -97,6 +97,15 @@ describe('--settle', () => {
     expect(result.stdout).toBe(`pressed left\n${FOCUS_LINE}, no move reported\n`);
   });
 
+  it('leaves out an id that repeats the label, as Disney+ sets them', async () => {
+    const label = 'The Office, Classé 16+, Sortie : 2005.';
+    reply('/keys', { pressed: 1 }, focusReport({ label, value: null, identifier: label }));
+
+    const result = await sandbox.run(['press', 'right', '--settle']);
+
+    expect(result.stdout).toBe(`pressed right\nFocus: "${label}"\n`);
+  });
+
   it('carries the focus report in --json', async () => {
     reply('/keys', { pressed: 1 }, NOT_PAIRED_FOCUS);
 

@@ -138,7 +138,7 @@ describe.skipIf(process.env.AGENT_ATV_E2E !== '1')('e2e: CLI -> standalone plugi
     const scanned = await cli('press', 'right', '--scan');
     expectOk(scanned);
     expect(scanned.stdout).toBe(
-      'scanned right: 0 moves, then press 1 reached "Fake focus" (id fake/focus) again (a row that wraps around, or two tiles that read the same)\n0 "Fake focus" (id fake/focus)  <- focus\n',
+      'scanned right: 2 moves, then press 2 reached "Fake focus" (id fake/focus) again: the row wraps around\n0 "Fake focus" (id fake/focus)\n1 "Fake focus" (id fake/focus)\n2 "Fake focus" (id fake/focus)  <- focus\n',
     );
     expectOk(await cli('wait', '--no-keyboard', '--timeout', '5000'));
     expect((await cli('state', 'app')).stdout).toBe('home screen\n');

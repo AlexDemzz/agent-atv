@@ -137,7 +137,7 @@ export function formatVolume(volume: number | null): string {
 export function formatFocus(element: FocusElement | null | undefined): string {
   if (!element) return 'unknown';
   const details = [
-    element.identifier !== null ? `id ${element.identifier}` : null,
+    element.identifier !== null && element.identifier !== element.label ? `id ${element.identifier}` : null,
     element.value !== null ? `value ${element.value.replace(/\s*\n\s*/g, ' ')}` : null,
   ].filter((part) => part !== null);
   const label = element.label !== null ? JSON.stringify(element.label) : null;

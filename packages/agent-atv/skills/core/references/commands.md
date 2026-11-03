@@ -28,7 +28,8 @@ Snapshot block, top to bottom:
   without the parts that are missing; `<app>` is the app that last played; states are
   `idle loading paused playing stopped seeking`
 - `Keyboard: unfocused|unknown` or `Keyboard: focused text="..."`
-- `Focus: "<label>" (id <identifier>, value <value>)` without the missing parts, or
+- `Focus: "<label>" (id <identifier>, value <value>)` without the missing parts (and without an id
+  equal to the label), or
   `Focus: unavailable, <reason>: <what to do>`
 - `Volume: <0-100>` or `Volume: n/a`
 - `Seq: <n>`
@@ -68,8 +69,8 @@ moves). `--json` carries it as `focus`: `{"available": true, "element": {"label"
 
 `--until` and `--scan` take one arrow and press it one key at a time with the settled focus. Besides
 the match, both stop when a press reports no move and leaves the same element (a press that changes
-the element's value, as in a Netflix row read as one element, counts as a move), when the focus reaches an element already seen (a
-row that wraps around, or two tiles that read the same), or after `--max` presses. A focus that cannot
+the element's value, as in a Netflix row read as one element, counts as a move), when two elements
+come back in the order already seen (a row that wraps around), or after `--max` presses. A focus that cannot
 be read stops them after that press: the list so far, then the focus error's exit code and fix. The numbered list starts at `0` with the
 element focused before the first press, when the plugin knew it, and marks the focused one:
 `2 "Plex" (id AppCell)  <- focus`. `--json`: `{"found": true, "presses", "start", "passed", "focus"}`
@@ -88,7 +89,9 @@ reads as `_`.
 
 `open` takes an app name, a bundle id, or a URL. A name resolves against the installed apps: exact name
 first, then a unique prefix; none or several exit 5 (`APP_NOT_FOUND`, `AMBIGUOUS_APP`). A target
-containing `://` launches as a URL and doesn't wait.
+containing `://` launches as a link and waits for the app that opens it: `opened TV
+(com.apple.TVWatchList)`, or `launched <link> (no app in the foreground after 15000ms: ...)`. When an
+app was already in front, the link may open in it: after 3 s that app is taken.
 
 A relative `seek` with nothing playing or paused fails with `NOTHING_PLAYING` (exit 1).
 

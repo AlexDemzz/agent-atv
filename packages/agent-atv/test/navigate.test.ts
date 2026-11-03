@@ -113,7 +113,8 @@ describe('press <arrow> --until <text>', () => {
     );
   });
 
-  it('stops when the focus comes back to an element it passed: the row wraps around', async () => {
+  it('stops when two elements come back in the same order: the row wraps around', async () => {
+    startingAt(NETFLIX);
     presses(moved(YOUTUBE), moved(PLEX), moved(NETFLIX), moved(YOUTUBE));
 
     const result = await sandbox.run(['press', 'right', '--until', 'Arte']);
@@ -121,6 +122,19 @@ describe('press <arrow> --until <text>', () => {
     expect(result.code).toBe(5);
     expect(keyRequests()).toHaveLength(4);
     expect(result.stderr).toContain('reached "YouTube" (id AppCell) again');
+    expect(result.stdout).toContain('4 "YouTube" (id AppCell)  <- focus');
+  });
+
+  it('goes on past a tile that reads like one already passed, as a podcast and a show of the same name', async () => {
+    const podcast = { label: 'Severance', value: null, identifier: null };
+    const show = { label: 'Severance', value: null, identifier: null };
+    startingAt(podcast);
+    presses(moved(tile('Labor of Love')), moved(tile('Movies')), moved(show), moved(tile('TV Shows')), moved(tile('Next keyboard')));
+
+    const result = await sandbox.run(['press', 'up', '--until', 'next keyboard']);
+
+    expect(result.code).toBe(0);
+    expect(keyRequests()).toHaveLength(5);
   });
 
   it('stops after --max presses and says how to go on', async () => {

@@ -84,19 +84,32 @@ Several flags combine with AND. A bare `wait 2000` just sleeps: keep it for when
 
 ## Recipes
 
-Search with the TV app's search, then steer on the show page:
+**A show or film by its link**, the fastest way: its page on tv.apple.com (a web search for the title
+and `tv.apple.com` finds it) opens in the TV app in about 2 s.
 
 ```bash
-agent-atv open com.apple.TVSearch && agent-atv wait --keyboard && agent-atv fill "stranger things"
-agent-atv press down --settle            # Focus: names the first result
-agent-atv press select && agent-atv wait --idle 1500
-agent-atv press down --until "Saison 2"  # the season, then the episode, by their names
+agent-atv open "https://tv.apple.com/show/severance/umc.cmc.1srk2goyh2q2zdxcx605w8vtx"
+# opened TV (com.apple.TVWatchList)
 ```
 
-In other apps, `press <arrow> --until search` reaches their search field; `press select`,
-`wait --keyboard`, then `fill`. Apps with their own on-screen keyboard never report keyboard focus:
-`fill` exits 6, and the letters have to be picked with the d-pad: `--scan` the keyboard's rows once,
-then chain the moves.
+**Without a link, the Search app.** It keeps the last query and where it scrolled, so bring the
+focus back to its keyboard first. Results come in rows, and the row right under the `Search In:`
+chips is the TV shows; songs, podcasts and people share the same titles further down.
+
+```bash
+agent-atv open com.apple.TVSearch --settle
+agent-atv state keyboard   # unfocused: agent-atv press up --until "next keyboard" && agent-atv press down --settle
+agent-atv fill "severance" && agent-atv wait --idle 1000
+agent-atv press down --until suggestion && agent-atv press down --settle   # a chip, then the TV shows row
+agent-atv press left --until "severance" || agent-atv press right --until "severance"
+agent-atv press select
+```
+
+On the show page, steer to the season and the episode by their names (`press down --until "Saison
+2"`). In other apps, `press <arrow> --until search` reaches their search field; `press select`,
+`wait --keyboard`, then `fill`. Apps with their own on-screen keyboard or PIN pad never report
+keyboard focus: `fill` exits 6, and each key is a `--until` away (`press left --until 1 && press
+select`).
 
 `back` goes up one level, `home` returns to the home screen. `seek +30` and `seek -10` read the
 current position first, so they need something playing or paused.

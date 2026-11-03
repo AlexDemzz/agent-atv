@@ -74,12 +74,22 @@ describe('open', () => {
     );
   });
 
-  it('launches a URL', async () => {
+  it('names the app a link opened', async () => {
+    const tv = { bundleId: 'com.apple.TVWatchList', name: 'TV' };
+    api.on('POST', OPEN, { body: { ok: true, app: tv, foreground: true, state: livingRoomState() } });
+
+    const result = await sandbox.run(['open', 'https://tv.apple.com/show/severance/umc.cmc.1srk2goyh2q2zdxcx605w8vtx']);
+
+    expect(result.stdout).toBe('opened TV (com.apple.TVWatchList)\n');
+    expect(api.requests[0]?.body).toMatchObject({ waitMs: 15000 });
+  });
+
+  it('says when no app took the foreground after a link', async () => {
     api.on('POST', OPEN, { body: { ok: true, app: null, foreground: false, state: livingRoomState() } });
 
     const result = await sandbox.run(['open', 'https://www.netflix.com/title/80057281']);
 
-    expect(result.stdout).toBe('launched https://www.netflix.com/title/80057281\n');
+    expect(result.stdout).toBe('launched https://www.netflix.com/title/80057281 (no app in the foreground after 15000ms: look with agent-atv snapshot --screenshot --max-width 1280 --jpeg)\n');
   });
 
   it('exits 5 when the app name is ambiguous', async () => {

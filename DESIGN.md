@@ -541,7 +541,14 @@ Route rules:
 - `keys`: validate the whole sequence before sending anything (key names §2.6, `count` 1–50,
   total presses ≤ 100, `intervalMs` 0–5000). Presses go one by one, `intervalMs` apart (none after
   the last). If press *n* fails, stop and return that error with `details.pressed = n-1`.
-- `open`: `target` containing `://` → launch as URL, return `foreground: false` without waiting.
+- `open`: `target` containing `://` → launch as a link and wait for the app that opens it. One
+  foreground read first (bounded to 5 s, as `state?app=1`); after the launch, the same polling as for an
+  app, until an app other than the one in front before is in front (`foreground: true`, `app` = it).
+  When an app was already in front, the link may open in it and nothing changes: the wait is capped at
+  3 s, then the app in front is taken (`foreground: true`). No app in front by `waitMs`:
+  `foreground: false`, `app: null`. Screen reading unable to tell: `foreground: null` with
+  `foregroundUnknown` as below, the hint for `SCREEN_UNAVAILABLE` being `check in a few seconds with
+  agent-atv state app`.
   Matching `^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$` → bundle id. Otherwise an app name, resolved against
   the app list: exact case-insensitive name first, then a unique case-insensitive prefix. None →
   `APP_NOT_FOUND`, several → `AMBIGUOUS_APP`. A bundle id missing from the app list is still launched
@@ -708,7 +715,8 @@ Volume: 35
 Seq: 182
 ```
 - `Focus:` (when the State carries a FocusReport) is `"<label>" (id <identifier>, value <value>)` without
-  the null parts (`unknown` for an element without any, which only an older plugin sends). An
+  the null parts, without an id equal to the label (Disney+ repeats the label there), with a value's
+  line breaks as spaces (`unknown` for an element without any, which only an older plugin sends). An
   unavailable report prints `Focus: unavailable, <reason>: <hint>`, e.g.
   `Focus: unavailable, screen reading not paired: run agent-atv pair A1B2C3D4E5F6 --screen` or
   `Focus: unavailable, screen reading off: enable "Screen reading" in the agent-atv plugin settings`;
@@ -788,8 +796,8 @@ stops on the first element whose label, value or identifier contains the text, c
 folded, a number at either end of the text only whole (`episode 1` is not in `Episode 11`; `--until`;
 a start that matches presses nothing), on a press whose FocusReport has `moved: false` and the same
 element as before it (`no_move`: Netflix reads a whole row as one element whose value names the item,
-`Item 4 of 75`, and sends no move event within it, so a changed element counts as a move), on an element equal to the start or one already passed (`repeat`: a row
-that wraps around, or two tiles that read the same), or after `--max` presses (`max`). An unavailable
+`Item 4 of 75`, and sends no move event within it, so a changed element counts as a move), when the last two elements come back in the order already seen (`repeat`: a row that wraps
+around; one element alone may be two tiles that read the same, a podcast and a show of one name), or after `--max` presses (`max`). An unavailable
 report, or one without `moved` (a failed `follow`, an older plugin), stops it after that press
 (`unknown`): presses past it would be blind. The list of what it passed is printed, then the report's
 code, reason and hint (its own exit code, 8 for the screen errors, 6 for `DEVICE_OFF`; without
@@ -846,6 +854,8 @@ $ agent-atv open com.apple.TVSearch --no-wait
 launched com.apple.TVSearch
 ```
 Not foreground after the wait: `launched com.netflix.Netflix (not in foreground after 15000ms)`, exit 0.
+A link prints the app that opened it, `opened TV (com.apple.TVWatchList)`, or `launched <link> (no app
+in the foreground after 15000ms: look with agent-atv snapshot --screenshot --max-width 1280 --jpeg)`.
 Screen reading can't tell (`foreground: null`): `open` does not wait and prints
 `launched com.netflix.Netflix (foreground app not known, <reason>: <hint>)`, e.g.
 `(foreground app not known, screen reading off: enable "Screen reading" in the agent-atv plugin settings)`, exit 0.
@@ -953,10 +963,12 @@ get from `agent-atv --help` or infer on its own. Sections:
    screen; a `screenshot` shows the rest. DRM video captures black.
 3. **Waiting**: one condition per expected change. `--idle` after in-app navigation, which produces no
    state change. Bare `wait 2000` is a last resort.
-4. Recipes: search (open `com.apple.TVSearch` → `wait --keyboard` → `fill` → `press down --settle` →
-   `press select`, then `--until` the season and the episode), another app's search field via
-   `--until`, apps with their own keyboard (`--scan` its rows, then chain the moves), `back`/`home`,
-   relative `seek`.
+4. Recipes: a show by its tv.apple.com link (`open <link>`, about 2 s); the Search app (it keeps the
+   last query: back to its keyboard with `press up --until "next keyboard"` and one `down`; `fill`;
+   `--until suggestion` then one `down` lands in the TV shows row, the first under the chips, where
+   `--until <title>` picks the show; measured 6.6 s from the home screen on tvOS 27.2), then `--until`
+   the season and the episode; another app's search field via `--until`; apps with their own keyboard
+   or PIN pad (each key a `--until` away); `back`/`home`, relative `seek`.
 5. Shell quoting: quote `*` key specs (zsh globbing), `--` before text starting with `-`.
 6. Screenshots: cost (seconds, MBs), `--max-width 1280 --jpeg` when full resolution isn't needed,
    `--if-changed`; one capture on a screen the agent cannot place, rather than a run of single presses.
