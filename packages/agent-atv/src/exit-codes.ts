@@ -25,6 +25,7 @@ const BY_CODE: Record<string, number> = {
   ROUTE_NOT_FOUND: EXIT.notFound,
   AMBIGUOUS_DEVICE: EXIT.notFound,
   AMBIGUOUS_APP: EXIT.notFound,
+  FOCUS_NOT_FOUND: EXIT.notFound,
   NOT_PAIRED: EXIT.notReady,
   NOT_CONNECTED: EXIT.notReady,
   AUTH_FAILED: EXIT.notReady,

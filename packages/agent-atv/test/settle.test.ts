@@ -89,6 +89,14 @@ describe('--settle', () => {
     expect([result.code, result.stdout]).toEqual([0, `pressed select\n${focusLine}\n`]);
   });
 
+  it('says so when the key moved nothing', async () => {
+    reply('/keys', { pressed: 1 }, { ...focusReport(), moved: false });
+
+    const result = await sandbox.run(['press', 'left', '--settle']);
+
+    expect(result.stdout).toBe(`pressed left\n${FOCUS_LINE}, no move reported\n`);
+  });
+
   it('carries the focus report in --json', async () => {
     reply('/keys', { pressed: 1 }, NOT_PAIRED_FOCUS);
 

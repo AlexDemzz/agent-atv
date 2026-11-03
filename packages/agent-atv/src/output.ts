@@ -31,8 +31,8 @@ export interface Unavailable {
   hint: string;
 }
 
-/** The plugin's report on the focused element (DESIGN.md §6.3). */
-export type FocusReport = { available: true; element: FocusElement } | Unavailable;
+/** The plugin's report on the focused element (DESIGN.md §6.3); after an action, whether it moved. */
+export type FocusReport = { available: true; element: FocusElement; moved?: boolean } | Unavailable;
 
 /** What tvOS shows (DESIGN.md §6.2). */
 export type Foreground =
@@ -145,7 +145,7 @@ export function formatFocus(element: FocusElement | null | undefined): string {
 }
 
 export function formatFocusLine(report: FocusReport): string {
-  if (report.available) return `Focus: ${formatFocus(report.element)}`;
+  if (report.available) return `Focus: ${formatFocus(report.element)}${report.moved === false ? ', no move reported' : ''}`;
   return `Focus: unavailable, ${report.reason}: ${report.hint}`;
 }
 
