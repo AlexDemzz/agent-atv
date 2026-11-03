@@ -296,7 +296,7 @@ describe('focus after actions (P5)', () => {
   });
 
   it.each([
-    ['other keys', '/keys', { keys: [{ key: 'down' }, { key: 'select' }], focus: true }],
+    ['another key', '/keys', { keys: [{ key: 'select' }], focus: true }],
     ['open', '/open', { target: 'com.netflix.Netflix', waitMs: 0, focus: true }],
   ])('gives %s a second for the move: a new screen takes longer to focus', async (_name, route, body) => {
     const { plugin, screen } = await screenPlugin();
@@ -305,6 +305,24 @@ describe('focus after actions (P5)', () => {
 
     expect(response.body.focus).toEqual({ available: true, element: HOME_FOCUS, moved: true });
     expect(screen.focusParams).toEqual([{ afterMoves: 0, waitMs: 1000, quietMs: 150 }]);
+  });
+
+  it.each([
+    [[{ key: 'down' }, { key: 'down' }, { key: 'select' }], 1000],
+    [[{ key: 'select' }, { key: 'right' }], 350],
+  ])('after several keys %j, waits for a move past the count taken before the last key, in its window', async (keys, waitMs) => {
+    const { plugin, worker } = await screenPlugin();
+    let moves = 3;
+    worker.handle('follow', () => ({ moves: (moves += 2) }));
+    const params: Record<string, unknown>[] = [];
+    worker.handle('focus', (p) => {
+      params.push(p);
+      return { focus: HOME_FOCUS, ageMs: 0, moved: true };
+    });
+
+    await plugin.post(`${base}/keys`, { keys, focus: true, intervalMs: 0 });
+
+    expect(params).toEqual([{ afterMoves: 7, waitMs, quietMs: 150 }]);
   });
 
   it('reports the element still focused when the keys moved nothing', async () => {

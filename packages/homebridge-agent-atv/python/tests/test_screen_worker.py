@@ -457,6 +457,24 @@ class SettleTest(ScreenWorkerTestCase):
         self.assertEqual(read["focus"], ARROW_FOCUS)
         self.assertTrue(read["moved"])
 
+    async def test_waits_for_the_apple_tv_to_confirm_the_element_after_a_layout_change(self) -> None:
+        moves = await self.baseline()
+        self.move_later(0.05, ARROW)
+        asyncio.get_running_loop().call_later(0.06, self.pmd3.post_notification, "UIAccessibilityLayoutChangedNotification")
+        asyncio.get_running_loop().call_later(0.3, self.pmd3.relayout)
+
+        read = await self.worker.call("focus", {"afterMoves": moves, **SETTLE})
+
+        self.assertEqual(read["focus"], ARROW_FOCUS)
+
+    async def test_takes_null_timings_for_the_defaults(self) -> None:
+        moves = await self.baseline()
+        self.move_later(0.05, ARROW)
+
+        read = await self.worker.call("focus", {"afterMoves": moves, "waitMs": None, "quietMs": None})
+
+        self.assertTrue(read["moved"])
+
     async def test_a_plain_read_says_nothing_about_a_move(self) -> None:
         await self.baseline()
         await self.move_focus(ARROW)

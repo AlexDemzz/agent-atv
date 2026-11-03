@@ -2,7 +2,7 @@ import type { BridgeClient } from '../bridge/client';
 import type { AgentAtvConfig } from '../config';
 import type { DeviceManager } from '../devices/manager';
 import type { PairingManager } from '../pairing/manager';
-import { isFocusUnknown, type CaptureOptions, type FocusRead, type FocusReport, type Foreground, type ScreenService, type Unavailable } from '../screen/service';
+import { isFocusUnknown, type CaptureOptions, type FocusRead, type FocusReport, type Foreground, type ScreenService, type Settle, type Unavailable } from '../screen/service';
 import { PLUGIN_NAME } from '../settings';
 import { ACTION_KEYS, KEY_ACTIONS, KEYS, type KeyAction } from '../bridge/protocol';
 import { ApiError, badRequest } from './errors';
@@ -62,25 +62,13 @@ const MOVE_WINDOW_MS = 350;
 const SCREEN_WINDOW_MS = 1000;
 const ARROWS = new Set(['up', 'down', 'left', 'right']);
 
-/**
- * The worker reports focus moves only while it follows the focus: from before the action. Answers
- * the move count to wait past, or undefined when the focus is not wanted or cannot be followed.
- */
-async function followFor(deps: RouteDeps, device: Device, wanted: boolean): Promise<number | undefined> {
-  return wanted ? deps.screen.follow(device) : undefined;
+/** After the action: the move it caused, past the baseline; a plain read without one. */
+async function withFocus(deps: RouteDeps, device: Device, wanted: boolean, settle?: Settle): Promise<{ focus?: FocusReport }> {
+  return wanted ? { focus: await deps.screen.report(device, settle) } : {};
 }
 
-/** After the action: the move it caused, past `moves`; a plain read when there is no baseline. */
-async function withFocus(
-  deps: RouteDeps,
-  device: Device,
-  wanted: boolean,
-  moves?: number,
-  windowMs = SCREEN_WINDOW_MS,
-): Promise<{ focus?: FocusReport }> {
-  if (!wanted) return {};
-  return { focus: await deps.screen.report(device, moves === undefined ? undefined : { moves, windowMs }) };
-}
+const settleAfter = (moves: number | undefined, windowMs = SCREEN_WINDOW_MS): Settle | undefined =>
+  moves === undefined ? undefined : { moves, windowMs };
 
 const MAX_WIDTH = { min: 160, max: 3840 };
 
@@ -306,9 +294,12 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         const { presses, intervalMs } = parseKeys(body);
         const focusWanted = wantsFocus(body);
         devices.requireConnected(device);
-        const moves = await followFor(deps, device, focusWanted);
+        // The worker reports focus moves only while it follows the focus: from before the keys.
+        let moves = focusWanted ? await deps.screen.follow(device) : undefined;
         for (const [index, press] of presses.entries()) {
           if (index > 0 && intervalMs > 0) await sleep(intervalMs);
+          // The report is about the last key: earlier moves must not stand for the screen it brings.
+          if (moves !== undefined && index > 0 && index === presses.length - 1) moves = (await deps.screen.follow(device)) ?? moves;
           try {
             await devices.call(device, 'key', { key: press.key, action: press.action });
           } catch (error) {
@@ -319,8 +310,8 @@ export function buildRoutes(deps: RouteDeps): Route[] {
             });
           }
         }
-        const windowMs = presses.every((press) => ARROWS.has(press.key)) ? MOVE_WINDOW_MS : SCREEN_WINDOW_MS;
-        const focus = await withFocus(deps, device, focusWanted, moves, windowMs);
+        const windowMs = ARROWS.has(presses.at(-1)!.key) ? MOVE_WINDOW_MS : SCREEN_WINDOW_MS;
+        const focus = await withFocus(deps, device, focusWanted, settleAfter(moves, windowMs));
         return { json: { ok: true, pressed: presses.length, ...focus, state: devices.pluginState(device) } };
       },
     },
@@ -341,10 +332,10 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         const waitMs = optionalInteger(body, 'waitMs', 0, 60_000) ?? 15_000;
         const focusWanted = wantsFocus(body);
         devices.requireConnected(device);
-        const moves = await followFor(deps, device, focusWanted);
+        const moves = focusWanted ? await deps.screen.follow(device) : undefined;
         if (target.includes('://')) {
           await devices.call(device, 'app.launch', { target });
-          const focus = await withFocus(deps, device, focusWanted, moves);
+          const focus = await withFocus(deps, device, focusWanted, settleAfter(moves));
           return { json: { ok: true, app: null, foreground: false, ...focus, state: devices.pluginState(device) } };
         }
         let app: App;
@@ -357,7 +348,7 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         await devices.call(device, 'app.launch', { target: app.bundleId });
         const { foreground, seen, unknown } =
           waitMs > 0 ? await waitForeground(deps.screen, device, app.bundleId, waitMs, signal) : { foreground: false };
-        const focus = await withFocus(deps, device, focusWanted, moves);
+        const focus = await withFocus(deps, device, focusWanted, settleAfter(moves));
         const shown = foreground && seen?.kind === 'app' ? { bundleId: seen.bundleId, name: seen.name } : app;
         return {
           json: {
@@ -391,11 +382,11 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         if (op !== 'clear' && text === undefined) throw badRequest('text', `text is required for op ${op}`);
         const focusWanted = wantsFocus(body);
         devices.requireConnected(device);
-        await followFor(deps, device, focusWanted);
+        if (focusWanted) await deps.screen.follow(device);
         const keyboard = await devices.call<Keyboard>(device, `keyboard.${op}`, op === 'clear' ? {} : { text });
         devices.patchState(device, { keyboard: { focus: keyboard.focus, text: keyboard.text } });
-        // Typing does not move the focus: the element focused before.
-        const focus = focusWanted ? { focus: await deps.screen.report(device) } : {};
+        // Typing does not move the focus: a plain read, of the element focused before.
+        const focus = await withFocus(deps, device, focusWanted);
         return {
           json: { ok: true, keyboard: { focus: keyboard.focus, text: keyboard.text }, ...focus, state: devices.pluginState(device) },
         };

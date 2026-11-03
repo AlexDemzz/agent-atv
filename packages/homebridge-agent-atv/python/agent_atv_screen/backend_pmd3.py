@@ -36,8 +36,13 @@ SCREEN_CHANGE = "UIAccessibilityScreenChangedNotification"
 LAYOUT_CHANGE = "UIAccessibilityLayoutChangedNotification"
 # After a layout change the daemon names the element it still inspects, the focused one.
 PROPERTIES_CHANGED = "hostInspectorCurrentElementPropertiesChanged:"
+# A settled read's defaults: how long to wait for a move past the baseline, then for no more moves.
+SETTLE_WAIT_MS = 1000
+SETTLE_QUIET_MS = 150
 # Bounds how long a settled read waits for the focus to stop moving.
 SETTLE_QUIET_CAP_S = 1.0
+# The home screen confirms the focused element within a few ms of a layout change, 0.2 s after a move.
+LAYOUT_CONFIRM_S = 0.5
 # Bounds the inspector reset of a session being dropped, often over a dead tunnel.
 INSPECTOR_RESET_S = 2.0
 NOT_FOLLOWED = "The focused element is not known yet: the Apple TV reports it only when the focus moves"
@@ -558,7 +563,13 @@ class Pmd3Backend:
         if after is not None:
             if not self._following():
                 raise _focus_unknown(NOT_ARMED)
-            moved = await self._settle(after, params.get("waitMs", 1000) / 1000, params.get("quietMs", 150) / 1000)
+            wait_ms = params.get("waitMs")
+            quiet_ms = params.get("quietMs")
+            moved = await self._settle(
+                after,
+                (SETTLE_WAIT_MS if wait_ms is None else wait_ms) / 1000,
+                (SETTLE_QUIET_MS if quiet_ms is None else quiet_ms) / 1000,
+            )
         async with self._focus_lock:
             focus, moved_at = await self._with_rsd(self._read_focus)
         result: Dict[str, Any] = {"focus": focus, "ageMs": round((received - moved_at) * 1000)}
@@ -577,6 +588,9 @@ class Pmd3Backend:
         cap = loop.time() + SETTLE_QUIET_CAP_S
         while await self._next_move(min(quiet_s, cap - loop.time())):
             pass
+        confirm_by = loop.time() + LAYOUT_CONFIRM_S
+        while self._unknown == LAYOUT_CHANGED and loop.time() < confirm_by:
+            await asyncio.sleep(0.02)
         return True
 
     async def _next_move(self, timeout_s: float) -> bool:

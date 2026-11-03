@@ -4,7 +4,7 @@ import type { Command, Context } from '../context.js';
 import { usageError } from '../errors.js';
 import { formatKeyPress, type KeyAction, type KeyPress, parseKeySpec } from '../keys.js';
 import { SETTLE_FLAG, printSettledFocus, settleOption } from '../focus.js';
-import { ARROWS, type Arrow, currentFocus, printScan, printUntil, walk } from '../navigate.js';
+import { currentFocus, isArrow, printScan, printUntil, walk } from '../navigate.js';
 import type { FocusReport, State } from '../output.js';
 
 export interface KeysResponse {
@@ -47,16 +47,16 @@ async function navigate(ctx: Context, specs: string[]): Promise<boolean> {
   if (until !== undefined && scan) throw usageError('Use either --until or --scan, not both', example);
   if (until !== undefined && until.trim() === '') throw usageError('--until needs the text to look for', example);
   const press = specs.length === 1 ? parseKeySpec(specs[0]!) : undefined;
-  if (!press || press.count !== 1 || press.action !== 'tap' || !(ARROWS as readonly string[]).includes(press.key)) {
+  if (!press || press.count !== 1 || press.action !== 'tap' || !isArrow(press.key)) {
     throw usageError(`--${scan ? 'scan' : 'until'} takes one arrow key: up, down, left or right`, example);
   }
   if (booleanFlag(ctx.args, 'hold') || booleanFlag(ctx.args, 'double') || ctx.args.flags.has('interval')) {
     throw usageError(`--${scan ? 'scan' : 'until'} presses plain taps, one at a time`, example);
   }
-  const arrow = press.key as Arrow;
+  const arrow = press.key;
   const max = integerFlag(ctx.args, 'max', 1, 100) ?? DEFAULT_MAX;
   const start = await currentFocus(ctx);
-  const pressArrow = async (key: Arrow) => (await sendKeys(ctx, [{ key, action: 'tap', count: 1 }], { focus: true })).focus;
+  const pressArrow = async (key: string) => (await sendKeys(ctx, [{ key, action: 'tap', count: 1 }], { focus: true })).focus;
   const result = await walk(pressArrow, arrow, start, max, until);
   if (scan) printScan(ctx, result, arrow);
   else printUntil(ctx, result, arrow, until!, max);

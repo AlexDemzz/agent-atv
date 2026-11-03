@@ -61,20 +61,20 @@ The default screenshot path is `<tmpdir>/agent-atv/screenshot-<device id>-<YYYYM
 With `--settle`, `press`, `back`, `home`, `open`, `type`, `fill` and `clear` also wait for the focus to
 settle and add a `Focus:` line (formats as in the snapshot block) after the line above; the exit code
 doesn't depend on it. After `press` and `open` the line names the element the Apple TV reported after
-the action, about 0.3 s after arrow keys and up to about 1 s after other keys and `open`; it ends with
+the last key, about 0.3 s after an arrow and up to about 1 s after other keys and `open`; it ends with
 `, no move reported` when the action moved nothing (the end of a row, or a screen that does not report
 moves). `--json` carries it as `focus`: `{"available": true, "element": {"label", "value",
 "identifier"}, "moved": true|false}` or `{"available": false, "code", "reason", "hint"}`.
 
-`--until` and `--scan` take one arrow and press it one key at a time with the settled focus. `--until`
-stops on the first element whose label, value or identifier contains the text (case and accents
-ignored); both stop when a press reports no move, when the focus comes back to an element already
-passed (a row that wraps around), or after `--max` presses. A focus that cannot be read stops them
-after that press, with the focus error's exit code and fix. The numbered list starts at `0` with the
+`--until` and `--scan` take one arrow and press it one key at a time with the settled focus. Besides
+the match, both stop when a press reports no move, when the focus reaches an element already seen (a
+row that wraps around, or two tiles that read the same), or after `--max` presses. A focus that cannot
+be read stops them after that press: the list so far, then the focus error's exit code and fix. The numbered list starts at `0` with the
 element focused before the first press, when the plugin knew it, and marks the focused one:
 `2 "Plex" (id AppCell)  <- focus`. `--json`: `{"found": true, "presses", "start", "passed", "focus"}`
 for `--until`, `{"stop": "no_move"|"repeat"|"max", "presses", "start", "passed", "focus"}` for
-`--scan`; a `--until` not found carries the same fields in `error.details`.
+`--scan`; a `--until` not found, and a focus lost on the way, carry `stop` and the same fields in
+`error.details`.
 
 Key spec: `<key>[:tap|double|hold][*count]`, count 1-50, at most 100 presses per command. `--hold` and
 `--double` apply to specs without their own action. Only `up down left right select menu home` take

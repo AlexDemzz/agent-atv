@@ -1,14 +1,18 @@
 import { devicePath } from './client.js';
 import type { Context } from './context.js';
 import { AtvError } from './errors.js';
-import { formatFocus, formatFocusLine, type FocusElement, type FocusReport } from './output.js';
+import { formatFocus, formatFocusLine, type FocusElement, type FocusReport, type Unavailable } from './output.js';
 
 export const ARROWS = ['up', 'down', 'left', 'right'] as const;
 export type Arrow = (typeof ARROWS)[number];
 
-const OPPOSITE: Record<Arrow, Arrow> = { up: 'down', down: 'up', left: 'right', right: 'left' };
+export const isArrow = (key: string): key is Arrow => (ARROWS as readonly string[]).includes(key);
 
-export type Stop = 'found' | 'no_move' | 'repeat' | 'max';
+const OPPOSITE: Record<Arrow, Arrow> = { up: 'down', down: 'up', left: 'right', right: 'left' };
+const crossAxis = (arrow: Arrow): Arrow => (arrow === 'up' || arrow === 'down' ? 'right' : 'down');
+
+/** `unknown`: the focus could not be read after a press, so the next presses would be blind. */
+export type Stop = 'found' | 'no_move' | 'repeat' | 'max' | 'unknown';
 
 export interface Walk {
   stop: Stop;
@@ -18,6 +22,8 @@ export interface Walk {
   /** The element each press moved the focus to, in order. */
   passed: FocusElement[];
   focus: FocusElement | null;
+  /** Why the focus could not be read, for `unknown`. */
+  lost?: Unavailable;
 }
 
 /** Sends one arrow and returns the settled focus the plugin reports after it. */
@@ -44,22 +50,33 @@ export async function currentFocus(ctx: Context): Promise<FocusElement | null> {
   }
 }
 
+/** A plugin that did not say whether the key moved the focus (its follow failed, or it predates `moved`). */
+const NO_MOVED: Unavailable = {
+  available: false,
+  code: 'SCREEN_UNAVAILABLE',
+  reason: 'the plugin did not say whether the key moved the focus',
+  hint: 'retry in a few seconds; if it keeps happening, update homebridge-agent-atv in the Homebridge UI (Plugins)',
+};
+
 /**
  * Presses `arrow` one key at a time, reading where each press moved the focus, until the focus
- * matches `until`, a press moves nothing, the focus comes back to an element already passed, or
- * `max` presses. A focus that cannot be read stops it at once: the presses would be blind.
+ * matches `until`, a press moves nothing, the focus reaches an element already seen, the focus
+ * cannot be read, or `max` presses.
  */
 export async function walk(press: PressArrow, arrow: Arrow, start: FocusElement | null, max: number, until?: string): Promise<Walk> {
   const passed: FocusElement[] = [];
   let presses = 0;
-  const result = (stop: Stop, focus: FocusElement | null): Walk => ({ stop, presses, start, passed, focus });
+  const result = (stop: Stop, focus: FocusElement | null, lost?: Unavailable): Walk => ({
+    stop, presses, start, passed, focus, ...(lost ? { lost } : {}),
+  });
   if (until !== undefined && start && matches(start, until)) return result('found', start);
   while (presses < max) {
     const report = await press(arrow);
     presses += 1;
-    if (!report?.available) throw focusLost(report, presses);
+    if (!report?.available) return result('unknown', passed.at(-1) ?? start, report ?? NO_MOVED);
+    if (report.moved === undefined) return result('unknown', passed.at(-1) ?? start, NO_MOVED);
     const { element } = report;
-    if (report.moved === false) return result('no_move', element);
+    if (!report.moved) return result('no_move', element);
     if ((start && same(start, element)) || passed.some((seen) => same(seen, element))) return result('repeat', element);
     passed.push(element);
     if (until !== undefined && matches(element, until)) return result('found', element);
@@ -67,21 +84,20 @@ export async function walk(press: PressArrow, arrow: Arrow, start: FocusElement 
   return result('max', passed.at(-1) ?? start);
 }
 
-function focusLost(report: FocusReport | undefined, press: number): AtvError {
-  if (!report) {
-    return new AtvError('FOCUS_UNKNOWN', `The plugin reported no focus after press ${press}`, {
-      hint: 'update the homebridge-agent-atv plugin, then retry',
-    });
-  }
-  const unavailable = report as Exclude<FocusReport, { available: true }>;
-  return new AtvError(unavailable.code, `Stopped after press ${press}: ${unavailable.reason}`, { hint: unavailable.hint });
-}
+const NO_MOVE = 'no move reported (the end of the row, or a screen that does not report moves)';
 
-const STOPS: Record<Exclude<Stop, 'found'>, (walk: Walk) => string> = {
-  no_move: (w) => `no move reported after press ${w.presses} (the end of the row, or a screen that does not report moves)`,
-  repeat: (w) => `the focus came back to ${formatFocus(w.focus)} after press ${w.presses}: the row wraps around`,
-  max: (w) => `stopped after --max ${w.presses} presses`,
-};
+function stopReason(w: Walk): string {
+  switch (w.stop) {
+    case 'no_move':
+      return `${NO_MOVE} after press ${w.presses}`;
+    case 'repeat':
+      return `press ${w.presses} reached ${formatFocus(w.focus)} again (a row that wraps around, or two tiles that read the same)`;
+    case 'max':
+      return `stopped after --max ${w.presses} presses`;
+    default:
+      return `${w.lost!.reason} after press ${w.presses}`;
+  }
+}
 
 /** `0 <start>`, then one numbered line per element passed; the focused one is marked. */
 export function walkLines(w: Walk): string[] {
@@ -91,37 +107,46 @@ export function walkLines(w: Walk): string[] {
   return elements.map((element, i) => `${i + offset} ${formatFocus(element)}${i === focused ? '  <- focus' : ''}`);
 }
 
+const walkBody = (w: Walk) => ({ presses: w.presses, start: w.start, passed: w.passed, focus: w.focus });
+
+function printWalk(ctx: Context, headline: string, w: Walk): void {
+  ctx.print(headline);
+  for (const line of walkLines(w)) ctx.print(line);
+}
+
+/** A focus lost on the way: what was passed so far, then the focus error with its own fix. */
+function failLost(ctx: Context, w: Walk, headline: string): never {
+  if (!ctx.json) printWalk(ctx, headline, w);
+  throw new AtvError(w.lost!.code, `Stopped: ${stopReason(w)}`, { hint: w.lost!.hint, details: { stop: w.stop, ...walkBody(w) } });
+}
+
 export function printUntil(ctx: Context, w: Walk, arrow: Arrow, until: string, max: number): void {
-  const body = { presses: w.presses, start: w.start, passed: w.passed, focus: w.focus };
+  const quoted = JSON.stringify(until);
   if (w.stop === 'found') {
-    if (ctx.json) return ctx.printJson({ found: true, ...body });
-    ctx.print(w.presses === 0 ? `pressed nothing: the focus already matches ${JSON.stringify(until)}` : `pressed ${arrow}*${w.presses} until ${JSON.stringify(until)}`);
+    if (ctx.json) return ctx.printJson({ found: true, ...walkBody(w) });
+    ctx.print(w.presses === 0 ? `pressed nothing: the focus already matches ${quoted}` : `pressed ${arrow}*${w.presses} until ${quoted}`);
     ctx.print(formatFocusLine({ available: true, element: w.focus! }));
     return;
   }
-  if (!ctx.json) {
-    ctx.print(`pressed ${arrow}*${w.presses}: ${JSON.stringify(until)} not found`);
-    for (const line of walkLines(w)) ctx.print(line);
-  }
-  const quoted = JSON.stringify(until);
-  const hints: Record<Exclude<Stop, 'found'>, string> = {
-    no_move: `look the other way (agent-atv press ${OPPOSITE[arrow]} --until ${quoted}) or in another row (agent-atv press ${arrow === 'up' || arrow === 'down' ? 'right' : 'down'} --settle); to check the row really ends: agent-atv screenshot --max-width 1280 --jpeg`,
-    repeat: `it is not in this row: try another row (agent-atv press ${arrow === 'up' || arrow === 'down' ? 'right' : 'down'} --settle), or look with agent-atv screenshot --max-width 1280 --jpeg`,
+  const headline = `pressed ${arrow}*${w.presses}: ${quoted} not found`;
+  if (w.stop === 'unknown') failLost(ctx, w, headline);
+  if (!ctx.json) printWalk(ctx, headline, w);
+  const otherRow = `agent-atv press ${crossAxis(arrow)} --settle`;
+  const look = 'agent-atv screenshot --max-width 1280 --jpeg';
+  const hints = {
+    no_move: `look the other way (agent-atv press ${OPPOSITE[arrow]} --until ${quoted}) or in another row (${otherRow}); to check the row really ends: ${look}`,
+    repeat: `it is not in this row: try another row (${otherRow}), or look with ${look}`,
     max: `go on with agent-atv press ${arrow} --until ${quoted} --max ${max * 2}`,
   };
-  throw new AtvError('FOCUS_NOT_FOUND', `${quoted} not found pressing ${arrow}: ${STOPS[w.stop](w)}`, {
-    hint: hints[w.stop],
-    details: { stop: w.stop, ...body },
+  throw new AtvError('FOCUS_NOT_FOUND', `${quoted} not found pressing ${arrow}: ${stopReason(w)}`, {
+    hint: hints[w.stop as keyof typeof hints],
+    details: { stop: w.stop, ...walkBody(w) },
   });
 }
 
 export function printScan(ctx: Context, w: Walk, arrow: Arrow): void {
-  if (ctx.json) return ctx.printJson({ stop: w.stop, presses: w.presses, start: w.start, passed: w.passed, focus: w.focus });
-  const ending: Record<Exclude<Stop, 'found'>, string> = {
-    no_move: 'then no move reported (the end of the row, or a screen that does not report moves)',
-    repeat: `then the focus came back to ${formatFocus(w.focus)} (the row wraps around)`,
-    max: `then stopped at --max (more may follow: agent-atv press ${arrow} --scan --max ${w.presses * 2})`,
-  };
-  ctx.print(`scanned ${arrow}: ${w.passed.length} moves, ${ending[w.stop as Exclude<Stop, 'found'>]}`);
-  for (const line of walkLines(w)) ctx.print(line);
+  const headline = `scanned ${arrow}: ${w.passed.length} moves, then ${stopReason(w)}`;
+  if (w.stop === 'unknown') failLost(ctx, w, headline);
+  if (ctx.json) return ctx.printJson({ stop: w.stop, ...walkBody(w) });
+  printWalk(ctx, w.stop === 'max' ? `${headline}; more may follow: agent-atv press ${arrow} --scan --max ${w.presses * 2}` : headline, w);
 }

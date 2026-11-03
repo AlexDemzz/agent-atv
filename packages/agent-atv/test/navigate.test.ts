@@ -81,7 +81,7 @@ describe('press <arrow> --until <text>', () => {
     expect(result.stdout).toBe(
       ['pressed right*3: "Arte" not found', '0 "Netflix" (id AppCell)', '1 "YouTube" (id AppCell)', '2 "Plex" (id AppCell)  <- focus', ''].join('\n'),
     );
-    expect(result.stderr).toContain('no move reported after press 3');
+    expect(result.stderr).toContain('no move reported (the end of the row, or a screen that does not report moves) after press 3');
     expect(result.stderr).toContain('agent-atv press left --until "Arte"');
   });
 
@@ -92,7 +92,7 @@ describe('press <arrow> --until <text>', () => {
 
     expect(result.code).toBe(5);
     expect(keyRequests()).toHaveLength(4);
-    expect(result.stderr).toContain('came back to "YouTube"');
+    expect(result.stderr).toContain('reached "YouTube" (id AppCell) again');
   });
 
   it('stops after --max presses and says how to go on', async () => {
@@ -114,6 +114,29 @@ describe('press <arrow> --until <text>', () => {
     expect(result.code).toBe(8);
     expect(keyRequests()).toHaveLength(1);
     expect(result.stderr).toContain('run agent-atv pair A1B2C3D4E5F6 --screen');
+  });
+
+  it('keeps what it passed when the focus is lost on the way', async () => {
+    startingAt(NETFLIX);
+    presses(moved(YOUTUBE), NOT_PAIRED_FOCUS);
+
+    const result = await sandbox.run(['press', 'right', '--until', 'Plex']);
+
+    expect(result.code).toBe(8);
+    expect(result.stdout).toBe('pressed right*2: "Plex" not found\n0 "Netflix" (id AppCell)\n1 "YouTube" (id AppCell)  <- focus\n');
+    presses(moved(YOUTUBE), NOT_PAIRED_FOCUS);
+    const json = await sandbox.run(['press', 'right', '--until', 'Plex', '--json']);
+    expect(JSON.parse(json.stdout).error.details).toMatchObject({ stop: 'unknown', passed: [YOUTUBE], focus: YOUTUBE });
+  });
+
+  it('stops rather than guess when the plugin does not say whether the key moved the focus', async () => {
+    presses({ available: true, element: YOUTUBE });
+
+    const result = await sandbox.run(['press', 'right', '--until', 'Plex']);
+
+    expect(result.code).toBe(8);
+    expect(keyRequests()).toHaveLength(1);
+    expect(result.stderr).toContain('did not say whether the key moved the focus');
   });
 
   it('carries the presses and the elements passed in --json', async () => {
@@ -149,7 +172,7 @@ describe('press <arrow> --scan', () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toBe(
       [
-        'scanned right: 3 moves, then no move reported (the end of the row, or a screen that does not report moves)',
+        'scanned right: 3 moves, then no move reported (the end of the row, or a screen that does not report moves) after press 4',
         '0 "Netflix" (id AppCell)',
         '1 "YouTube" (id AppCell)',
         '2 "Disney+" (id AppCell, value Recently Updated)',

@@ -123,8 +123,8 @@ const DEFAULT_TIMEOUT_MS = 10 * SECOND;
 const READY_WAIT_MS = 20 * SECOND;
 /** After the first move, the worker waits until none came for this long: a grid may scroll on. */
 const SETTLE_QUIET_MS = 150;
-/** Past the window: up to 1 s of moves still coming, then a read (about 70 ms on a Pi). */
-const SETTLE_READ_MS = 1500;
+/** Past the window: up to 1 s of moves still coming, 0.5 s for a layout confirmation, a 70 ms read. */
+const SETTLE_READ_MS = 2000;
 const REPORT_READ_MS = 5000;
 /** Opening the worker's accessibility session takes about 0.5 s on a Pi, plus up to 1 s after a close. */
 const FOLLOW_MS = 2000;

@@ -787,9 +787,13 @@ or `--interval`), else exit 2; `--max <n>` (1-100, default 20), only with them. 
 stops on the first element whose label, value or identifier contains the text, case and accents
 folded (`--until`; a start that matches presses nothing), on a press whose FocusReport has
 `moved: false` (`no_move`), on an element equal to the start or one already passed (`repeat`: a row
-that wraps around), or after `--max` presses (`max`). An unavailable report stops it after that press
-with the report's code, reason and hint (exit 8): presses past it would be blind. It never presses
-anything but the arrow.
+that wraps around, or two tiles that read the same), or after `--max` presses (`max`). An unavailable
+report, or one without `moved` (a failed `follow`, an older plugin), stops it after that press
+(`unknown`): presses past it would be blind. The list of what it passed is printed, then the report's
+code, reason and hint (its own exit code, 8 for the screen errors, 6 for `DEVICE_OFF`; without
+`moved`, `SCREEN_UNAVAILABLE` with `retry in a few seconds; if it keeps happening, update
+homebridge-agent-atv in the Homebridge UI (Plugins)`), with `stop` and the walk's fields in
+`error.details`, for both flags. It never presses anything but the arrow.
 ```
 $ agent-atv press right --until plex
 pressed right*3 until "plex"
@@ -799,10 +803,10 @@ pressed right*3: "arte" not found
 0 "Netflix" (id AppCell)
 1 "YouTube" (id AppCell)
 2 "Plex" (id AppCell)  <- focus
-error: "arte" not found pressing right: no move reported after press 3 (the end of the row, or a screen that does not report moves) (FOCUS_NOT_FOUND)
+error: "arte" not found pressing right: no move reported (the end of the row, or a screen that does not report moves) after press 3 (FOCUS_NOT_FOUND)
 hint: look the other way (agent-atv press left --until "arte") or in another row (agent-atv press down --settle); to check the row really ends: agent-atv screenshot --max-width 1280 --jpeg
 $ agent-atv press right --scan
-scanned right: 3 moves, then no move reported (the end of the row, or a screen that does not report moves)
+scanned right: 3 moves, then no move reported (the end of the row, or a screen that does not report moves) after press 4
 0 "Netflix" (id AppCell)
 1 "YouTube" (id AppCell)
 2 "Disney+" (id AppCell, value Recently Updated)
@@ -811,7 +815,8 @@ scanned right: 3 moves, then no move reported (the end of the row, or a screen t
 Not found exits 5 (`FOCUS_NOT_FOUND`); the hint per stop: `no_move` the other way or another row,
 `repeat` another row or a screenshot, `max` the same command with `--max` doubled. The list starts at
 `0` with the start when known (else at `1`) and marks the element equal to the last focus. `--scan`
-exits 0 whatever stopped it. `--json`: `{"found": true, "presses", "start", "passed", "focus"}`
+exits 0 on `no_move`, `repeat` and `max` (`max` adds `; more may follow: agent-atv press <arrow>
+--scan --max <2n>`). `--json`: `{"found": true, "presses", "start", "passed", "focus"}`
 (`--until`), `{"stop", "presses", "start", "passed", "focus"}` (`--scan`), and a not found carries
 `stop` and the same fields in `error.details`.
 
@@ -1378,7 +1383,7 @@ Methods (plugin timeouts in brackets):
 | --- | --- | --- |
 | `ping` [5 s] | `{}` | `{"pong": true, ...status}` |
 | `follow` [10 s; the plugin gives up after 2 s] | `{}` | `{"moves"}` once the worker follows the focus (§6.1 Focus following), for 15 s from this or the last `focus` read; `moves` is how many focus moves the worker has seen (it only grows); the screen errors when there is no tunnel |
-| `focus` [90 s] | `{"afterMoves"?: int ≥ 0, "waitMs"?: 0–10000 (1000), "quietMs"?: 0–1000 (150)}` | `{"focus": {"label", "value", "identifier"}, "ageMs"}` for the element tvOS last moved the focus to; `ageMs` is how long before the request arrived tvOS reported that move (negative for a move during the read or the wait). With `afterMoves` (a `follow` answer from before an action) it first waits up to `waitMs` for the move count to pass it, then until no move came for `quietMs` (at most 1 s more: a grid that scrolls on), and adds `"moved": true`; with no move in `waitMs` it reads the element still focused and adds `"moved": false`. A read while armed keeps it armed. `FOCUS_UNKNOWN` (§6.1) while not armed (no session opened; with `afterMoves`, at once), before the first move the session saw, after a screen change or a layout change the daemon did not confirm the element through, or when the move has no element or every attribute is empty |
+| `focus` [90 s] | `{"afterMoves"?: int ≥ 0, "waitMs"?: 0–10000 (1000), "quietMs"?: 0–1000 (150)}` (null: the default) | `{"focus": {"label", "value", "identifier"}, "ageMs"}` for the element tvOS last moved the focus to; `ageMs` is how long before the request arrived tvOS reported that move (negative for a move during the read or the wait). With `afterMoves` (a `follow` answer from before an action) it first waits up to `waitMs` for the move count to pass it, then until no move came for `quietMs` (at most 1 s more: a grid that scrolls on), then up to 0.5 s while a layout change waits for the daemon to confirm the element (§6.1), and adds `"moved": true`; with no move in `waitMs` it reads the element still focused and adds `"moved": false`. A read while armed keeps it armed. `FOCUS_UNKNOWN` (§6.1) while not armed (no session opened; with `afterMoves`, at once), before the first move the session saw, after a screen change or a layout change the daemon did not confirm the element through, or when the move has no element or every attribute is empty |
 | `foreground` [90 s] | `{}` | Foreground (§6.1): `{"kind": "app", "bundleId", "name"}`, `{"kind": "home"}`, `{"kind": "screensaver"}` or `{"kind": "ambiguous", "apps": [{"bundleId", "name"}]}`; `SCREEN_FAILED` when nothing but the shell is in front |
 | `screenshot` [110 s] | `{"path": "<absolute path>", "maxWidth"?: int > 0, "format"?: "png" \| "jpeg"}` | writes the image there (mode 0600), `{"bytes"}`; §6.1 Screenshot. Without Pillow, `maxWidth` or `jpeg` fail with `SCREEN_FAILED` saying how to reinstall |
 | `pair.begin` [70 s] | `{}` | `{}` once the Apple TV shows its PIN; browses up to 20 s |
@@ -1451,9 +1456,11 @@ settings`.
   screen answers at once (`retry in a few seconds`), so neither the action nor `snapshot` waits.
   Each read is bounded; one that doesn't answer in time reports `SCREEN_UNAVAILABLE`.
 - After `keys` and `open` that asked for it (settle mode): one worker `focus` read with `afterMoves`
-  = the `moves` its `follow` answered, `quietMs` 150 and `waitMs` 350 when every key is an arrow (the
-  move event comes 72 to 102 ms after the key on the home screen) or 1000 otherwise (a new screen is
-  focused later); bounded to `waitMs` + 1.5 s. The report then carries `moved`. A move from before the
+  = the `moves` its `follow` answered, `quietMs` 150 and `waitMs` 350 when the last key is an arrow
+  (the move event comes 72 to 102 ms after the key on the home screen) or 1000 otherwise (a new screen
+  is focused later); bounded to `waitMs` + 2 s. With several keys, a second `follow` just before the
+  last one gives the baseline (the first one's when it fails): the report is about the last key, and
+  the moves of `down down` must not stand for the screen a final `select` brings. The report then carries `moved`. A move from before the
   action never counts: the count only passes the baseline on a later one. An arrow on the home screen
   costs about 0.3 s (event, 150 ms of quiet, a 70 ms read); one that moves nothing, 0.35 s and a read.
   Without a baseline (the `follow` failed or timed out), a plain read, without `moved`. `keyboard`

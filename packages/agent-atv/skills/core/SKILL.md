@@ -23,8 +23,7 @@ agent-atv wait --playing                         # wait for the change the actio
 ```
 
 - **`--until <text>`** presses one arrow, one key at a time, and stops on the first element whose
-  label, value or identifier contains the text (case and accents ignored). When the element is not
-  that way, it lists what it passed and says where to look next.
+  label, value or identifier contains the text (case and accents ignored).
 - **`--scan`** presses one arrow until the focus stops moving and numbers every element from where the
   focus started: `0 "Netflix"`, `1 "YouTube"`, ... `3 "Plex"  <- focus`. Element 1 is then
   `press 'left*2'` away.
@@ -108,8 +107,8 @@ stops with `no matches found`. Text that starts with `-` goes after `--`: `agent
 ## Screenshots
 
 A capture takes 3 to 7 s and a 4K PNG weighs up to 30 MB. Use `--scan`, the `Focus:` line and
-`snapshot` unless the question is what the whole screen shows. On a screen you cannot place, one
-capture costs less than a run of single presses. Add `--max-width 1280 --jpeg` unless you need
+`snapshot` unless the question is what the whole screen shows. On a new screen you cannot place,
+take one capture rather than a run of single presses. Add `--max-width 1280 --jpeg` unless you need
 full resolution: about 100 KB instead of several MB. For repeat looks use `screenshot --if-changed`,
 which prints `unchanged <previous path>` when nothing changed. DRM-protected video captures black.
 
