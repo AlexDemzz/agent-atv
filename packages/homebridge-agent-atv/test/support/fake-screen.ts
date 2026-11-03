@@ -73,6 +73,8 @@ export function installScreen(worker: FakeBridge, options: { paired?: boolean; i
     replyDelayMs: 0,
     image: png(3840, 2160),
     focusReads: 0,
+    /** `follow` requests: the worker follows the focus only after one (DESIGN.md §6.1). */
+    follows: 0,
     foreground: { kind: 'home' } as Foreground,
     /** How many next foreground reads find nothing but the shell in front (SCREEN_FAILED). */
     foregroundFailures: 0,
@@ -90,6 +92,11 @@ export function installScreen(worker: FakeBridge, options: { paired?: boolean; i
     if (!screen.paired) throw new BridgeFailure('SCREEN_NOT_PAIRED', 'No RemotePairing pair record for this Apple TV');
   };
   worker
+    .handle('follow', () => {
+      requirePaired();
+      screen.follows += 1;
+      return {};
+    })
     .handle('focus', async () => {
       requirePaired();
       screen.focusReads += 1;

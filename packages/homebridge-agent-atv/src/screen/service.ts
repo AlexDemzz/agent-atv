@@ -118,6 +118,8 @@ const FIRST_READ_MS = 1000;
 /** Between settle reads that found the focus unknown or not moved yet. */
 const SETTLE_RETRY_MS = 100;
 const REPORT_READ_MS = 5000;
+/** Opening the worker's accessibility session takes about 0.5 s on a Pi, plus up to 1 s after a close. */
+const FOLLOW_MS = 2000;
 const IDENTIFIER = /^[A-Za-z0-9-]+$/;
 
 const SCRUBBED_ENV = new Set(['XDG_DATA_HOME', 'SUDO_USER', 'SUDO_UID', 'SUDO_GID']);
@@ -281,6 +283,20 @@ export class ScreenService {
       return { available: true, element };
     } catch (error) {
       return this.unavailable(device, error, 'focus read failed');
+    }
+  }
+
+  /**
+   * Asks the worker to follow the focus (DESIGN.md §6.1), before an action whose move must be
+   * reported: it frames every focus move on the TV meanwhile, so only around agent actions.
+   * Best effort, like report(): bounded, never throws, nothing without a tunnel already up.
+   */
+  async follow(device: Device): Promise<void> {
+    try {
+      this.requireTunnel(device);
+      await this.within(device, this.request(device, 'follow'), FOLLOW_MS, 'follow');
+    } catch (error) {
+      this.options.log.debug(`${this.options.devices.displayName(device)}: cannot follow the focus: ${errorMessage(error)}`);
     }
   }
 

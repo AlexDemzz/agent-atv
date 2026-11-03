@@ -56,6 +56,11 @@ function wantsFocus(body: Body): boolean {
   return requiredBoolean(body, 'focus');
 }
 
+/** The worker reports focus moves only while it follows the focus: from before the action. */
+async function followFor(deps: RouteDeps, device: Device, wanted: boolean): Promise<void> {
+  if (wanted) await deps.screen.follow(device);
+}
+
 /** `movedSince`: the action was meant to move the focus, so an older focus is not the answer. */
 async function withFocus(deps: RouteDeps, device: Device, wanted: boolean, movedSince?: number): Promise<{ focus?: FocusReport }> {
   return wanted ? { focus: await deps.screen.report(device, { settle: true, movedSince }) } : {};
@@ -285,6 +290,7 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         const { presses, intervalMs } = parseKeys(body);
         const focusWanted = wantsFocus(body);
         devices.requireConnected(device);
+        await followFor(deps, device, focusWanted);
         const startedAt = Date.now();
         for (const [index, press] of presses.entries()) {
           if (index > 0 && intervalMs > 0) await sleep(intervalMs);
@@ -319,6 +325,7 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         const waitMs = optionalInteger(body, 'waitMs', 0, 60_000) ?? 15_000;
         const focusWanted = wantsFocus(body);
         devices.requireConnected(device);
+        await followFor(deps, device, focusWanted);
         const startedAt = Date.now();
         if (target.includes('://')) {
           await devices.call(device, 'app.launch', { target });
@@ -369,6 +376,7 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         if (op !== 'clear' && text === undefined) throw badRequest('text', `text is required for op ${op}`);
         const focusWanted = wantsFocus(body);
         devices.requireConnected(device);
+        await followFor(deps, device, focusWanted);
         const keyboard = await devices.call<Keyboard>(device, `keyboard.${op}`, op === 'clear' ? {} : { text });
         devices.patchState(device, { keyboard: { focus: keyboard.focus, text: keyboard.text } });
         const focus = await withFocus(deps, device, focusWanted);
@@ -437,6 +445,8 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         let app: Foreground | undefined;
         try {
           if (conditions.focus !== undefined) {
+            // Its polls keep the worker following.
+            await deps.screen.follow(device);
             read = await readFocus();
             stops.push(poll(FOCUS_POLL_MS, signal, async () => void (read = await readFocus().catch(() => read))));
           }

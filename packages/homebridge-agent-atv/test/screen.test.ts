@@ -415,7 +415,71 @@ describe('focus after actions (P5)', () => {
       expect(response.body).not.toHaveProperty('focus');
     }
     expect(screen.focusReads).toBe(0);
+    expect(screen.follows).toBe(0);
     expect(Date.now() - started).toBeLessThan(300);
+  });
+
+  it.each([
+    ['keys', '/keys', { keys: [{ key: 'down' }], focus: true }, 'key'],
+    ['open', '/open', { target: 'com.netflix.Netflix', waitMs: 0, focus: true }, 'app.launch'],
+    ['keyboard', '/keyboard', { op: 'append', text: 'a', focus: true }, 'keyboard.append'],
+  ])('%s asks the worker to follow the focus before the Apple TV gets the action', async (_name, route, body, call) => {
+    const { plugin, tv, worker, bridge } = await screenPlugin();
+    tv.state.keyboard = { focus: 'focused', text: '' };
+    const sentBeforeFollow: number[] = [];
+    worker.handle('follow', () => {
+      sentBeforeFollow.push(bridge.calls(call).length);
+      return {};
+    });
+
+    const response = await plugin.post(`${base}${route}`, body);
+
+    expect(response.status).toBe(200);
+    expect(sentBeforeFollow).toEqual([0]);
+    expect(bridge.calls(call)).toHaveLength(1);
+  });
+
+  it('still acts and reports the focus when the worker cannot follow it', async () => {
+    const { plugin, worker, bridge } = await screenPlugin();
+    worker.handle('follow', () => {
+      throw new BridgeFailure('SCREEN_FAILED', 'The Apple TV did not answer: ConnectionResetError');
+    });
+
+    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'down' }], focus: true });
+
+    expect(response.status).toBe(200);
+    expect(bridge.calls('key')).toHaveLength(1);
+    expect(response.body.focus).toEqual({ available: true, element: HOME_FOCUS });
+  });
+
+  it('gives up on a follow request that hangs after about 2 s and still acts', async () => {
+    const { plugin, worker, bridge } = await screenPlugin();
+    worker.handle('follow', () => NO_RESPONSE);
+
+    const started = Date.now();
+    const response = await plugin.post(`${base}/keys`, { keys: [{ key: 'down' }], focus: true });
+
+    expect(response.status).toBe(200);
+    expect(bridge.calls('key')).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(4000);
+  });
+
+  it('does not ask the worker to follow when screen reading is not paired', async () => {
+    const { plugin, worker } = await screenPlugin({ paired: false });
+
+    await plugin.post(`${base}/keys`, { keys: [{ key: 'down' }], focus: true });
+
+    expect(worker.calls('follow')).toHaveLength(0);
+  });
+
+  it('never asks the worker to follow for a cold focus read', async () => {
+    const { plugin, screen } = await screenPlugin();
+
+    await plugin.get(`${base}/focus`);
+    await plugin.get(`${base}/state?focus=1`);
+
+    expect(screen.focusReads).toBe(2);
+    expect(screen.follows).toBe(0);
   });
 
   it('rejects a focus field that is not a boolean', async () => {
@@ -580,6 +644,21 @@ describe('wait for a focused element (P5)', () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ ok: true, matched: ['focus'], focus: NETFLIX });
+  });
+
+  it('asks the worker to follow the focus once, before its first read', async () => {
+    const { plugin, worker, screen } = await screenPlugin();
+    screen.reads = [HOME_FOCUS, HOME_FOCUS, NETFLIX];
+    const readsBeforeFollow: number[] = [];
+    worker.handle('follow', () => {
+      readsBeforeFollow.push(screen.focusReads);
+      return {};
+    });
+
+    await plugin.post(`${base}/wait`, { conditions: { focus: 'com.netflix' }, timeoutMs: 5000 });
+
+    expect(readsBeforeFollow).toEqual([0]);
+    expect(screen.focusReads).toBe(3);
   });
 
   it('keeps polling while the focus is not known yet', async () => {
