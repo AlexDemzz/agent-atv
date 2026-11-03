@@ -48,7 +48,7 @@ Focus: "Netflix" (id app-icon/com.netflix.Netflix)
 ```
 
 Only the focused element is readable (label, value, identifier); the rest of the screen is only in a
-`screenshot`. The plugin follows the focus only around your actions: up to about 15 s after the last
+`screenshot`. The plugin follows the focus only around your actions: up to about 60 s after the last
 action that read it. Start acting right after `snapshot`: `--until`, `--scan` and `--settle` learn
 the focus by moving it. Leave `--settle` off keys whose effect the state shows (`play_pause`, then
 `wait --playing`).

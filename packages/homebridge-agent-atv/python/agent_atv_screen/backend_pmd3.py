@@ -75,7 +75,8 @@ class Timings:
     # How long the session may stay untargeted after the Apple TV ends one lost before it (§6.1 One target).
     retarget_s: float = 30.0
     # How long the focus stays followed after the last follow or focus request (§6.1 Focus following).
-    follow_idle_s: float = 15.0
+    # Agents think 15 to 47 s between TV commands (transcripts, 2026-11-03): long enough to cover that.
+    follow_idle_s: float = 60.0
 
 
 def _text(value: Any) -> Optional[str]:

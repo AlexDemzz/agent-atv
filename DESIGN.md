@@ -1273,9 +1273,9 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   the user's own remote included (What the daemon does meanwhile), so the worker follows the focus
   only around agent actions. A `follow` request arms it: it opens the session as above if none is open
   (about 0.4 s on a Pi, then about 70 ms for the target and the type; measured on tvOS 27.2, the very
-  next move is reported) and keeps it for 15 s (`follow_idle_s`). Every `follow` and every `focus` read
-  while armed starts those 15 s again, so an agent polling the focus (`wait --focus`) keeps it armed.
-  Once 15 s pass with neither, the worker disarms: type 0, visuals off, session closed. Setting type 0
+  next move is reported) and keeps it for 60 s (`follow_idle_s`). Every `follow` and every `focus` read
+  while armed starts those 60 s again, so an agent polling the focus (`wait --focus`) keeps it armed.
+  Once 60 s pass with neither, the worker disarms: type 0, visuals off, session closed. Setting type 0
   on a session that stays open does not stop the focus events, so closing it is part of disarming;
   after that, moves made with the remote show no frame at all. A `focus` read while not armed answers
   `FOCUS_UNKNOWN` at once, without opening a session, saying to move the focus with a direction key and
@@ -1396,7 +1396,7 @@ Methods (plugin timeouts in brackets):
 | method | params | result |
 | --- | --- | --- |
 | `ping` [5 s] | `{}` | `{"pong": true, ...status}` |
-| `follow` [10 s; the plugin gives up after 2 s] | `{}` | `{"moves"}` once the worker follows the focus (§6.1 Focus following), for 15 s from this or the last `focus` read; `moves` is how many focus moves the worker has seen (it only grows); the screen errors when there is no tunnel |
+| `follow` [10 s; the plugin gives up after 2 s] | `{}` | `{"moves"}` once the worker follows the focus (§6.1 Focus following), for 60 s from this or the last `focus` read; `moves` is how many focus moves the worker has seen (it only grows); the screen errors when there is no tunnel |
 | `focus` [90 s] | `{"afterMoves"?: int ≥ 0, "waitMs"?: 0–10000 (1000), "quietMs"?: 0–1000 (150)}` (null: the default) | `{"focus": {"label", "value", "identifier"}, "ageMs"}` for the element tvOS last moved the focus to; `ageMs` is how long before the request arrived tvOS reported that move (negative for a move during the read or the wait). With `afterMoves` (a `follow` answer from before an action) it first waits up to `waitMs` for the move count to pass it, then until no move came for `quietMs` (at most 1 s more: a grid that scrolls on), then up to 0.5 s while a layout change waits for the daemon to confirm the element (§6.1), and adds `"moved": true`; with no move in `waitMs` it reads the element still focused and adds `"moved": false`. A read while armed keeps it armed. `FOCUS_UNKNOWN` (§6.1) while not armed (no session opened; with `afterMoves`, at once), before the first move the session saw, after a screen change or a layout change the daemon did not confirm the element through, or when the move has no element or every attribute is empty |
 | `foreground` [90 s] | `{}` | Foreground (§6.1): `{"kind": "app", "bundleId", "name"}`, `{"kind": "home"}`, `{"kind": "screensaver"}` or `{"kind": "ambiguous", "apps": [{"bundleId", "name"}]}`; `SCREEN_FAILED` when nothing but the shell is in front |
 | `screenshot` [110 s] | `{"path": "<absolute path>", "maxWidth"?: int > 0, "format"?: "png" \| "jpeg"}` | writes the image there (mode 0600), `{"bytes"}`; §6.1 Screenshot. Without Pillow, `maxWidth` or `jpeg` fail with `SCREEN_FAILED` saying how to reinstall |
@@ -1485,7 +1485,7 @@ settings`.
   `follow` (§6.1 Focus following), awaited before the Apple TV gets the action so the move it causes
   is reported. Best effort, like a report: only over a tunnel already `connected`, bounded to 2 s,
   never an error (a failure is logged at debug). Cold reads (`/focus`, `state?focus=1`) never send it,
-  so they answer `FOCUS_UNKNOWN` unless an action armed the worker within the last 15 s.
+  so they answer `FOCUS_UNKNOWN` unless an action armed the worker within the last 60 s.
 - `wait` on `focus` sends `follow` once at its start, then keeps polling (which keeps the worker
   armed) through `FOCUS_UNKNOWN`: the next move makes the focus known.
 - `state?focus=1`: one read, bounded to 5 s.
@@ -1629,7 +1629,8 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
    move to another element); pressing past the top of a list can move the inspector onto a heading
    (`Choisissez un profil`, `Qui est-ce ?`). The TV app and Disney+'s content rows are not measured. While an agent action has the worker follow the focus (§6.1 Focus
    following), each move, the user's own included, flashes the daemon's highlight for one round trip;
-   the 15 s it stays armed after the last request is a guess, not a measurement.
+   it stays armed 60 s after the last request, to cover an agent's think time between TV commands
+   (15 to 47 s in transcripts); 15 s lapsed mid-task, which left a Netflix carousel's focus unknown.
    4K screenshots reach about 33 MB and take several seconds on a Pi (§6.1); `maxWidth` and
    `format: "jpeg"` (Pillow, §6.1) shrink what crosses the network, not the capture itself. The persistent tunnel's effect on the Apple TV's sleep is unmeasured.
 4. **The RemotePairing PIN length** isn't documented by Apple; the API accepts 4 to 8 digits for that

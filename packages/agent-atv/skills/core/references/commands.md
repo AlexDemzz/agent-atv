@@ -38,7 +38,7 @@ Snapshot block, top to bottom:
 `ambiguous: <bundle id> <name>, ...`, read live; exit 8 when screen reading can't answer), `playing`
 (`playing video "Chapter One" 12:03/58:10 in Netflix`), `keyboard` (`focused "stran"`), `volume` (`35` or `n/a`), `connection`,
 `seq`, `focus` (`"Netflix" (id app-icon/com.netflix.Netflix)`, read live; exit 8 when screen reading
-can't answer, and when no `--settle` action or `wait --focus` ran in the last 15 s or so: the focus is
+can't answer, and when no `--settle` action or `wait --focus` ran in the last 60 s or so: the focus is
 followed only around actions). With `--json`: `{"<field>": value}`.
 
 The default screenshot path is `<tmpdir>/agent-atv/screenshot-<device id>-<YYYYMMDD-HHMMSS>.png` (UTC),
