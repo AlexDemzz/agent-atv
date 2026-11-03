@@ -277,9 +277,11 @@ pymobiledevice3 (`remote_<identifier>.plist`) can be copied into
 instead of pairing again.
 
 Reading the focus takes about 0.2 s; `--settle` waits up to 1 s for it to settle. The Apple TV reports
-the focus only when it moves, so the plugin says the focus is not known rather than guess: right
-after Homebridge starts, after the screen, the app or the playback changed, and after a key that
-moved nothing, until the next move. A 4K screenshot takes
+the focus only when it moves, and the plugin follows it only around agent actions: from an action with
+`--settle` (or a `wait --focus`) until about 15 s after the last one. So the plugin says the focus is
+not known rather than guess: outside those actions (`state focus` or `snapshot` on their own), after
+the screen, the app or the playback changed, and after a key that moved nothing, until the next move
+made with `--settle`. A 4K screenshot takes
 up to about 15 s on a Pi depending on its size (frames reach 30 MB), so agents use
 `screenshot --if-changed`, and `--max-width 1280 --jpeg` (about 110 KB) when the full resolution
 isn't needed, which matters most over a slow remote link. DRM-protected video captures black.
@@ -327,7 +329,9 @@ Routes cover devices and scanning, state, keys, apps and `open`, keyboard text, 
 
 - Screen reading gives the focused element, not the whole screen; the rest is only in screenshots.
 - To follow the focus, screen reading uses the Apple TV's accessibility inspector, which frames each
-  newly focused item in green; the plugin removes the frame right away, but it can flash for a moment.
+  newly focused item in green. The plugin turns it on only around agent actions (about 15 s after the
+  last one) and removes the frame right away meanwhile, so it can flash for a moment then, also on
+  moves made with the remote. Outside agent actions the inspector is off and the TV shows no frame.
   Without screen reading, in-app navigation relies on `wait --idle` and looking again.
 - The foreground app (`App:`, `wait --app`, `open` waiting for its app) needs screen reading; without
   it `App:` says `unknown` with the fix and `open` returns as soon as the launch is sent.

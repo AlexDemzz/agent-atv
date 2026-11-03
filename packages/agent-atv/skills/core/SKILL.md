@@ -34,7 +34,9 @@ That `Focus:` line is your feedback inside apps, the way a sighted user watches 
 add `--settle` whenever the next step depends on where the focus is, and leave it off for keys whose
 effect the state shows (`play_pause`, then `wait --playing`). Only the focused element is readable
 (label, value, identifier); the rest of the screen is only in a `screenshot`. `snapshot` shows the
-focus too, and `state focus` reads it alone.
+focus too, and `state focus` reads it alone, but the plugin follows the focus only around your
+actions: up to about 15 s after the last `--settle` action or `wait --focus`. Before that, or later,
+they say the focus is not known; move it with `--settle` (`press down --settle`) to learn it.
 
 The state an action returns is the plugin's cache at that moment and can lag (`volume up` may print
 the old level), so read state from the next `wait` or `snapshot`.

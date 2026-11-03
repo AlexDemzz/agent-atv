@@ -466,7 +466,7 @@ is one (`run agent-atv pair A1B2C3D4E5F6 --screen`). An agent must be able to ac
 | `PAIRING_IN_PROGRESS` | 409 | |
 | `KEYBOARD_NOT_FOCUSED` | 409 | |
 | `DEVICE_OFF` | 409 | screen read while power is off; fake backend |
-| `FOCUS_UNKNOWN` | 409 | the focused element is not known: it has not moved since screen reading started following it, the screen changed since, or tvOS reported a move without a readable element (§6.1, §6.3) |
+| `FOCUS_UNKNOWN` | 409 | the focused element is not known: no agent action follows it now (a cold read), it has not moved since screen reading started following it, the screen changed since, or tvOS reported a move without a readable element (§6.1, §6.3) |
 | `PAYLOAD_TOO_LARGE` | 413 | |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | |
 | `PAIRING_FAILED` | 422 | wrong PIN |
@@ -557,7 +557,8 @@ Route rules:
   `SCREEN_UNAVAILABLE` the hint is `check in a few seconds with agent-atv wait --app <bundleId>`, since
   opening again would relaunch the app. A failed read (`SCREEN_FAILED`, or a read that timed out over
   a connected tunnel) is retried at the next tick; when no read ever answered, `foreground` is `null` too.
-- Actions (`keys`, `open`, `keyboard`) read the focus only when the body says `"focus": true`
+- Actions (`keys`, `open`, `keyboard`) read the focus only when the body says `"focus": true`, and
+  then have the screen worker follow it before the Apple TV gets the action (§6.3)
   (absent, `null` or `false`: no read, no settle delay, as for every optional field; anything else:
   `BAD_REQUEST` `field: focus`, before the action runs). They then add `focus`, a FocusReport read once the focus settles (§6.3), and read
   `state` after it. The action itself never fails because of screen reading.
@@ -590,7 +591,7 @@ Route rules:
   - `text`: case-insensitive substring of any of `nowPlaying.name`, `playing.title`, `playing.artist`,
     `playing.album`, `playing.seriesName`, `keyboard.text`.
   - `focus`: case-insensitive substring of the focused element's `label`, `value` or `identifier`. The
-    focus has no change events: the route reads it once before waiting (a `SCREEN_*` error ends the
+    focus has no change events: the route asks the screen worker to follow it (§6.3), reads it once before waiting (a `SCREEN_*` error ends the
     wait at once) and then every 250 ms from the start of the previous read. A `FOCUS_UNKNOWN` poll
     forgets the last read, another failed poll keeps it, and a read from before the now-playing app or
     playback last changed (§6.3) counts as unknown.
@@ -1193,35 +1194,53 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   uvloop also avoided the drops in 5 captures, for a reason not understood, so it is not used.
 - **Focused element**: the accessibility daemon has no call that returns the tvOS focus.
   `deviceFetchSpecialElement:` gives the first (0) and the last (1) element of the screen, whatever has
-  the focus, and every element reports the same traits. The worker follows the focus instead: as soon
-  as the tunnel is up it opens one `AccessibilityAudit(rsd)` session, calls `deviceDidGetTargeted`,
+  the focus, and every element reports the same traits. The worker follows the focus instead, while an
+  agent asks for it (Focus following): it opens one `AccessibilityAudit(rsd)` session, calls `deviceDidGetTargeted`,
   sets the monitored event type to 2 (`deviceInspectorSetMonitoredEventType:`, the only type
   `deviceInspectorSupportedEventTypes` lists) and consumes `iter_events`. Each tvOS focus move then
   pushes `hostInspectorCurrentElementChanged:` with an `AXAuditInspectorFocus_v1` whose `element` is
   the newly focused one, about 50 ms after the key press; the worker keeps the last one. A `focus` read
   takes `element_attributes(id, ["Label", "Value", "Identifier"])` of that element, about 0.2 s on a
   Pi. All three steps are needed: without `deviceDidGetTargeted` or without type 2 no event comes.
+- **Focus following**: while the type is 2 the TV frames every newly focused element, moves made with
+  the user's own remote included (What the daemon does meanwhile), so the worker follows the focus
+  only around agent actions. A `follow` request arms it: it opens the session as above if none is open
+  (about 0.4 s on a Pi, then about 70 ms for the target and the type; measured on tvOS 27.2, the very
+  next move is reported) and keeps it for 15 s (`follow_idle_s`). Every `follow` and every `focus` read
+  while armed starts those 15 s again, so an agent polling the focus (`wait --focus`) keeps it armed.
+  Once 15 s pass with neither, the worker disarms: type 0, visuals off, session closed. Setting type 0
+  on a session that stays open does not stop the focus events, so closing it is part of disarming;
+  after that, moves made with the remote show no frame at all. A `focus` read while not armed answers
+  `FOCUS_UNKNOWN` at once, without opening a session, saying to move the focus with a direction key and
+  settle. A new tunnel (worker start, reconnect) does not arm: it resets the inspector once instead (a
+  session that calls `deviceDidGetTargeted`, sets type 0 and the visuals off, then closes), so a frame
+  left on by a killed or crashed worker goes away. While armed, the supervisor re-opens a session lost
+  with its tunnel or ended by another inspector at its next health check; not armed, it opens none. The
+  plugin sends `follow` before every action that asks for the settled focus and at the start of a
+  `wait` on `focus` (§6.3).
 - **What the daemon does meanwhile**: it highlights each newly focused element on the TV (a green
   frame) even with `deviceInspectorShowVisuals: 0` sent before, so the worker sends it again after
   every focus move and every `hostInspectorCurrentElementPropertiesChanged:` (the daemon highlights the
   element it names again, about every 30 s at rest on the home screen's top shelf), and the frame
-  shows only for that round trip. `deviceEnableHighlight: 0` and turning the
-  inspector off do not help; the latter switches the type to 0, after which the events no longer track
-  the focus. The type and the highlight belong to the daemon and outlive the session: on shutdown
-  the worker sets the type back to 0 and the visuals off. A worker killed without that leaves the TV
-  highlighting each focus move until the next worker session.
+  shows only for that round trip, and only while the worker follows the focus (Focus following).
+  `deviceEnableHighlight: 0` does not help; the type 0 stops the highlight but also the focus events.
+  The type and the highlight belong to the daemon and outlive the session: on disarming and on shutdown
+  the worker sets the type back to 0 and the visuals off. A worker killed while armed leaves the TV
+  framing each focus move until the next worker's tunnel resets the inspector.
 - **One target**: only the session that last called `deviceDidGetTargeted` gets the events, and the
   end of any session, once the daemon learns of it, leaves no session targeted, with no event to tell
   the one that was. A session closed right before its tunnel reaches the daemon only when the Apple TV
   disposes of the dead tunnel, 20 to 35 s later (measured on a Pi): after a Homebridge restart that
   untargeted the next worker's session, about every other time, and its focus stayed unknown. So the
   worker keeps the tunnel up 1 s after closing a session on it, and the daemon learns of the end at once.
+  For the same reason, a session opened less than 1 s after another one closed on the tunnel (the
+  reset of a new tunnel, a disarm) waits for the rest of that second first.
   A killed worker or a lost tunnel cannot do that: its session ends 20 s or more later, at no set
   time, untargeting the session that follows, and targeting that session again brings back
   notifications but no focus moves until the monitored type is set again too. Meanwhile the daemon
   still highlights every focus move with nobody to clear it: a green frame that stays on the focused
   element. So the worker calls `deviceDidGetTargeted` and sets the monitored type 2 once more on its
-  session every 30 s while it is the current one. On a healthy session that costs about 70 ms and
+  session every 30 s while it is armed. On a healthy session that costs about 70 ms and
   loses no move (measured on tvOS 27.2: 18 moves out of 18 with a retarget every 3 s). A one-shot
   retarget 40 s after the session opened left the worker untargeted for good when the Apple TV
   disposed of the lost session later than that (2026-11-02, after a Homebridge restart). After a
@@ -1232,8 +1251,10 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   closes cleanly also untargets the worker's, and targeting it again does not bring the focus moves
   back there (measured on tvOS 27.2); only a fresh session does, which costs about 1 s of blindness.
 - **Focus not known**: nothing reports where the focus is before it moves, and a wrong element is
-  worse than none. `focus` answers `FOCUS_UNKNOWN` instead of a guess until the first move of a
-  session (after a worker start, a reconnect, or another inspector client changing the monitored type,
+  worse than none. `focus` answers `FOCUS_UNKNOWN` instead of a guess while the worker is not armed
+  (Focus following: outside agent actions, a cold read stays unknown until the agent moves the focus
+  with `--settle`); until the first move of a
+  session (after arming, a reconnect, or another inspector client changing the monitored type,
   which ends the session's following) and after the first retarget following a lost session (One target); after a `hostInspectorNotificationReceived:` carrying
   `UIAccessibilityScreenChangedNotification` until the next move (a screen can change without a focus
   event: inside apps some changes send no focus event at all; other notifications such as
@@ -1244,7 +1265,7 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
   event for the focused element); and for a move whose event has no element or
   whose element reads empty Label, Value and Identifier (seen in a video player while "Info" was
   focused). A read whose focus moves or changes screen during its attribute read (about 0.2 s)
-  reads the new element or answers unknown. The supervisor re-arms a session that stopped following at its next health check.
+  reads the new element or answers unknown. While armed, the supervisor re-opens a session that stopped following at its next health check.
   `move_focus`, `perform_press` and element listing are never called: they move an inspector cursor.
 - **Foreground app**: `DvtProvider(rsd)` + `DeviceInfo(...).proclist()` (DVT `deviceinfo`
   `runningProcesses`), one read per request, about 0.5 s on a Pi. Applications carry
@@ -1307,7 +1328,8 @@ Methods (plugin timeouts in brackets):
 | method | params | result |
 | --- | --- | --- |
 | `ping` [5 s] | `{}` | `{"pong": true, ...status}` |
-| `focus` [90 s] | `{}` | `{"focus": {"label", "value", "identifier"}, "ageMs"}` for the element tvOS last moved the focus to; `ageMs` is how long before the request arrived tvOS reported that move (negative for a move during the read). `FOCUS_UNKNOWN` (§6.1) before the first move the session saw, after a screen change or a layout change the daemon did not confirm the element through, or when the move has no element or every attribute is empty |
+| `follow` [10 s; the plugin gives up after 2 s] | `{}` | `{}` once the worker follows the focus (§6.1 Focus following), for 15 s from this or the last `focus` read; the screen errors when there is no tunnel |
+| `focus` [90 s] | `{}` | `{"focus": {"label", "value", "identifier"}, "ageMs"}` for the element tvOS last moved the focus to; `ageMs` is how long before the request arrived tvOS reported that move (negative for a move during the read). A read while armed keeps it armed. `FOCUS_UNKNOWN` (§6.1) while not armed (no session opened), before the first move the session saw, after a screen change or a layout change the daemon did not confirm the element through, or when the move has no element or every attribute is empty |
 | `foreground` [90 s] | `{}` | Foreground (§6.1): `{"kind": "app", "bundleId", "name"}`, `{"kind": "home"}`, `{"kind": "screensaver"}` or `{"kind": "ambiguous", "apps": [{"bundleId", "name"}]}`; `SCREEN_FAILED` when nothing but the shell is in front |
 | `screenshot` [110 s] | `{"path": "<absolute path>", "maxWidth"?: int > 0, "format"?: "png" \| "jpeg"}` | writes the image there (mode 0600), `{"bytes"}`; §6.1 Screenshot. Without Pillow, `maxWidth` or `jpeg` fail with `SCREEN_FAILED` saying how to reinstall |
 | `pair.begin` [70 s] | `{}` | `{}` once the Apple TV shows its PIN; browses up to 20 s |
@@ -1324,12 +1346,14 @@ Methods (plugin timeouts in brackets):
 - A pairing runs on its own thread; a late `input()` from a pairing given up on reaches only that
   pairing. When the Apple TV confirms after `pair.pin` answered `DEVICE_TIMEOUT`, the worker still
   takes the new record and opens the tunnel.
-- `focus`, `foreground` and `screenshot` wait for a tunnel being opened (up to 30 s; a request wakes a backing-off
+- `follow`, `focus`, `foreground` and `screenshot` wait for a tunnel being opened (up to 30 s; a request wakes a backing-off
   supervisor), retry once on a fresh tunnel when the call fails, and serialize per kind.
 - Logs: INFO lines are status changes only, and the plugin logs them at info (§6.3): the focus
   following stopping or resuming (a failure retried at every health check logs at its first
-  failure only), another inspector taking over, a read retried on a fresh tunnel, and the first
-  failure of the periodic retarget (§6.1 One target). Everything else is DEBUG: no line per request. The
+  failure only), another inspector taking over, a read retried on a fresh tunnel, the first
+  failure of the periodic retarget (§6.1 One target), and the first failure of the inspector reset of
+  a new tunnel (a streak logs once). Arming and disarming are DEBUG: they come with every agent
+  action. Everything else is DEBUG: no line per request. The
   worker runs its own loggers at INFO and every other one (pymobiledevice3, PyTCP, asyncio) at
   WARNING; `AGENT_ATV_BRIDGE_DEBUG=1` switches all to DEBUG.
 - Errors: `SCREEN_NOT_PAIRED` (no record), `SCREEN_UNAVAILABLE` (no tunnel, `details.tunnel`),
@@ -1385,7 +1409,13 @@ settings`.
   retried every 100 ms within the window and drops the reads before it; when the window ends without
   a usable read, the report is `FOCUS_UNKNOWN`. `keyboard` keeps the element focused before (typing
   does not move the focus).
-- `wait` on `focus` keeps polling through `FOCUS_UNKNOWN`: the next move makes the focus known.
+- Before an action that asked for the settled focus (`keys`, `open`, `keyboard` with `"focus": true`),
+  `follow` (§6.1 Focus following), awaited before the Apple TV gets the action so the move it causes
+  is reported. Best effort, like a report: only over a tunnel already `connected`, bounded to 2 s,
+  never an error (a failure is logged at debug). Cold reads (`/focus`, `state?focus=1`) never send it,
+  so they answer `FOCUS_UNKNOWN` unless an action armed the worker within the last 15 s.
+- `wait` on `focus` sends `follow` once at its start, then keeps polling (which keeps the worker
+  armed) through `FOCUS_UNKNOWN`: the next move makes the focus known.
 - `state?focus=1`: one read, bounded to 5 s.
 - AppReport, never an error, for `state?app=1` (and the reads of `open`): `{"available": true, ...Foreground}`
   or the same unavailable shape as FocusReport (`SCREEN_FAILED` reason: `foreground read failed`).
@@ -1408,7 +1438,8 @@ settings`.
 
 No pymobiledevice3 import. Paired iff started with `--identifier` or after `pair.pin` with `1234`
 (identifier `FAKE-REMOTEPAIRING-0001`); `pair.begin` always succeeds. Focus
-`{"label": "Fake focus", "value": null, "identifier": "fake/focus"}`; foreground always
+`{"label": "Fake focus", "value": null, "identifier": "fake/focus"}`, armed or not; `follow` answers
+`{}`; foreground always
 `{"kind": "home"}`; screenshots are a 1920x1080 PNG, scaled to `maxWidth` (never up), and with
 `format: "jpeg"` a JPEG of just SOI, SOF0 (the size) and EOI;
 tunnel `connected` whenever paired.
@@ -1454,7 +1485,7 @@ interface where behaviour is observed; fakes sit at the outermost boundary only.
 
 - **B1. Bridge stdio, fake backend**: spawn `python3 -m agent_atv_bridge --fake`, write request lines, read response/event lines. Catches framing, `ready`, dispatch, validation and error codes, and the fake Apple TV semantics (§2.8) the plugin's contract test relies on; misses everything pyatv does.
 - **B2. Bridge protocol with pyatv faked at its boundary**: in-process `serve(PyatvBackend(tests/fake_pyatv), reader, writer)`; the test sends JSON lines and fires the fake's listener callbacks. Catches the key → pyatv call table, InputAction mapping, pyatv exception → error code mapping, State building, push/poll event emission and debounce, `power.set` waiting for the confirmed state and its session check on timeout (`POWER_NOT_CONFIRMED`, a stale session dropped), the periodic session check (kept, dropped on a missing or disagreeing answer, the grace for a late push, stopped when refused, never racing a `power.set`), pairing handler lifecycle and 90 s expiry, per-device action serialization; misses real pyatv/tvOS behaviour and API drift (B3).
-- **W1. Screen worker with pymobiledevice3 faked at its boundary**: in-process `serve(Pmd3Backend(fake_pmd3 namespace), reader, writer)` (`tests/test_screen_worker.py`, the B2 harness), plus `python -m agent_atv_screen --fake` over stdio. `tests/fake_pmd3.py` stands in for the provider/RSD (`UserspaceRsdTunnel`, `get_remote_pairing_tunnel_services`, `create_core_device_tunnel_service_using_remotepairing`), `AccessibilityAudit` (as the daemon behaves on tvOS: focus events and UIAccessibility notifications only for the last targeted session with monitored type 2, untargeted by the end of any session, which a tunnel closed too soon after the close delays, and once lost sessions are disposed of, focus moves only after the type is set again, a highlight on each focused element while the type is 2 even with no session targeted, daemon state that outlives sessions, special elements that are the first and last element), `DvtProvider`/`Screenshot`, `DeviceInfo.proclist()` (processes with the tvOS 27.2 fields, `show()` sets which run in the foreground), the manual-pairing browse and `RemotePairingManualPairingService` (which calls a bare `input()` like the real one). Catches the Wi-Fi provider swap and address choice, the inbound packet queue (installed by the worker; a burst past the socketpair buffer arrives whole and in order, the newest dropped past the bound, a packet the socket refuses dropped alone, no writer left on the socket by packets arriving during close), record migration (and refusing another Apple TV's record), reconnect and retry, the focus read (followed from the tunnel's start, `FOCUS_UNKNOWN` before a move, after a screen change notification, after a layout change until the daemon confirms the same element, and for an empty or element-less move, `ageMs` from the request's arrival, the highlight cleared after every move, unknown again when another inspector changes the type, the daemon reset on shutdown, a next worker, or the session after a lost tunnel, still followed once the Apple TV disposes of lost sessions, even after the first retarget, with the focus unknown until the next move, no special elements or cursor moves, one session per tunnel), the DTX buffer raise, the foreground classification (home, an app by its display name, the launch overlap, the screensaver, several apps, only the shell), screenshot files and serialization, `maxWidth`/`format` (JPEG and PNG scaled down, never up, validation; the Pillow cases skipped without Pillow), INFO logs (a failing follow logged once), the threaded PIN pairing and a late confirmation, the status events and the fake backend; misses real pymobiledevice3, PyTCP and tvOS behaviour (checked by hand on a Pi, §6.1).
+- **W1. Screen worker with pymobiledevice3 faked at its boundary**: in-process `serve(Pmd3Backend(fake_pmd3 namespace), reader, writer)` (`tests/test_screen_worker.py`, the B2 harness), plus `python -m agent_atv_screen --fake` over stdio. `tests/fake_pmd3.py` stands in for the provider/RSD (`UserspaceRsdTunnel`, `get_remote_pairing_tunnel_services`, `create_core_device_tunnel_service_using_remotepairing`), `AccessibilityAudit` (as the daemon behaves on tvOS: focus events and UIAccessibility notifications only for the last targeted session with monitored type 2, untargeted by the end of any session, which a tunnel closed too soon after the close delays, and once lost sessions are disposed of, focus moves only after the type is set again, a highlight on each focused element while the type is 2 even with no session targeted, daemon state that outlives sessions, special elements that are the first and last element), `DvtProvider`/`Screenshot`, `DeviceInfo.proclist()` (processes with the tvOS 27.2 fields, `show()` sets which run in the foreground), the manual-pairing browse and `RemotePairingManualPairingService` (which calls a bare `input()` like the real one). Catches the Wi-Fi provider swap and address choice, the inbound packet queue (installed by the worker; a burst past the socketpair buffer arrives whole and in order, the newest dropped past the bound, a packet the socket refuses dropped alone, no writer left on the socket by packets arriving during close), record migration (and refusing another Apple TV's record), reconnect and retry, on-demand following (no session and no highlight on a move until `follow`, nor after a worker killed while armed, thanks to the reset of each new tunnel; after `follow` a move reported and its highlight cleared; disarmed after `follow_idle_s` with no request, then no highlight and `FOCUS_UNKNOWN`; a `focus` read keeping it armed; a cold `focus` answering `FOCUS_UNKNOWN` with the fix and opening no session; arming right after the reset session closed still targeted; a failing reset logged once), the focus read (`FOCUS_UNKNOWN` before a move, after a screen change notification, after a layout change until the daemon confirms the same element, and for an empty or element-less move, `ageMs` from the request's arrival, the highlight cleared after every move, unknown again when another inspector changes the type, the daemon reset on shutdown, a next worker, or the session after a lost tunnel, still followed once the Apple TV disposes of lost sessions, even after the first retarget, with the focus unknown until the next move, no special elements or cursor moves, one session per tunnel), the DTX buffer raise, the foreground classification (home, an app by its display name, the launch overlap, the screensaver, several apps, only the shell), screenshot files and serialization, `maxWidth`/`format` (JPEG and PNG scaled down, never up, validation; the Pillow cases skipped without Pillow), INFO logs (a failing follow logged once), the threaded PIN pairing and a late confirmation, the status events and the fake backend; misses real pymobiledevice3, PyTCP and tvOS behaviour (checked by hand on a Pi, §6.1).
 - **W2. pymobiledevice3 surface check**: runs only when pymobiledevice3 is importable (`requirements-screen.txt`); asserts every name in `fake_pmd3.IMITATES` exists with compatible signatures and coroutine-ness, that the objects handed back expose what the worker reads, that `_create_no_root_tunnel_provider` and `input` are still looked up at call time, that `UserspaceTun.write` and `close` are still the sources the inbound queue relies on (pinned digests), and that the tunnel's socketpair is a datagram one. Catches the fake drifting from the pinned version; misses runtime behaviour.
 - **B3. pyatv surface check**: runs only when `pyatv` is importable (venv or CI with `requirements.txt`); asserts every function, attribute, enum member and keyword argument `fake_pyatv` imitates exists in the installed pyatv 0.18, and the private Companion path the session check reaches (`_interfaces`, `.api.fetch_attention_state()`, `SystemStatus`). Catches the fake drifting from the pinned pyatv; misses runtime behaviour.
 
@@ -1464,7 +1495,7 @@ interface where behaviour is observed; fakes sit at the outermost boundary only.
 - **P2. Plugin ↔ real bridge contract**: the P1 harness with the default spawner and `AGENT_ATV_FAKE_BRIDGE=1` (real Python bridge in `--fake` mode); skipped when `python3` is absent. Catches protocol drift between the plugin and bridge builders (field names, events, error codes, pairing flow); misses pyatv.
 - **P3. Homebridge platform with a fake API**: call the default export of `src/index.ts` with a fake `api` (real HAP from `@homebridge/hap-nodejs`, an EventEmitter for `didFinishLaunching`/`shutdown`, recorded `publishExternalAccessories`) and a fake bridge. Catches platform registration, nothing started before `didFinishLaunching`, invalid config logged without throwing, Television/InputSource/Speaker characteristics driven by state, `onSet` → bridge calls, `onGet` never awaiting the bridge, the `Active` write answering before the power is confirmed, shutdown stopping the bridge; misses Home app behaviour and real Homebridge lifecycle quirks.
 - **P4. Venv bootstrap with a fake command runner**: `ensureVenv({..., run: fakeRun})` over a temp dir, for `.venv` and `.venv-screen`; plus the core reporting a failed screen venv. Catches create/recreate/install/skip decisions, Python and OpenSSL version gates, error statuses and hints; misses real pip, network and distro Python quirks.
-- **P5. Screen routes with a scripted fake worker**: P1 harness with `spawnScreen` (`test/support/fake-screen.ts` speaks §6.2). Catches the worker spawn spec (args, `HOME`, env scrubbing), identifier persistence, worker restarts with the current address, bounded focus reads, `/focus`, `state?focus=1`, the settled focus after actions that send `"focus": true` and every unavailable report, no read without it, `FOCUS_UNKNOWN` (409, report, `wait` on `focus` polling through it and never matching an unknown focus, no move reported after the keys, a move reported late within the window, a focus older than the last app or playback change), the foreground app (`state?app=1` for each kind and when unavailable, `open` polling it, timing out and returning at once with `foregroundUnknown`, `wait` on `app` never matching `ambiguous`), `POST /screen`, screenshots (temp file, sha256/304, headers, non-PNG, `maxWidth`/`format` pass-through and validation, `image/jpeg` with its size), status logs at info (a failing reconnect once) and worker INFO lines at info, error mapping and hints, `/info` and DeviceSummary `screen`; misses the real worker (W1, C2) and pymobiledevice3.
+- **P5. Screen routes with a scripted fake worker**: P1 harness with `spawnScreen` (`test/support/fake-screen.ts` speaks §6.2). Catches the worker spawn spec (args, `HOME`, env scrubbing), identifier persistence, worker restarts with the current address, bounded focus reads, `/focus`, `state?focus=1`, the settled focus after actions that send `"focus": true` and every unavailable report, `follow` sent before the Apple TV gets such an action and once at the start of `wait` on `focus` (a failing or hanging one costing the action nothing, none when unpaired or for a cold read), no read without it, `FOCUS_UNKNOWN` (409, report, `wait` on `focus` polling through it and never matching an unknown focus, no move reported after the keys, a move reported late within the window, a focus older than the last app or playback change), the foreground app (`state?app=1` for each kind and when unavailable, `open` polling it, timing out and returning at once with `foregroundUnknown`, `wait` on `app` never matching `ambiguous`), `POST /screen`, screenshots (temp file, sha256/304, headers, non-PNG, `maxWidth`/`format` pass-through and validation, `image/jpeg` with its size), status logs at info (a failing reconnect once) and worker INFO lines at info, error mapping and hints, `/info` and DeviceSummary `screen`; misses the real worker (W1, C2) and pymobiledevice3.
 
 The Homebridge UI (`homebridge-ui/`) is a thin proxy with no automated seam; it is checked by hand.
 Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
@@ -1518,13 +1549,16 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
    in the second before the plugin learns of the new app can show the previous app's element. Also
    unmeasured in apps: whether, after a move that sent no event, the daemon confirms the previous
    element after a layout change; a plain read would then show it, while `--settle` still rejects it
-   as older than the keys. Each move flashes the daemon's highlight for one round trip.
+   as older than the keys. While an agent action has the worker follow the focus (§6.1 Focus
+   following), each move, the user's own included, flashes the daemon's highlight for one round trip;
+   the 15 s it stays armed after the last request is a guess, not a measurement.
    4K screenshots reach about 33 MB and take several seconds on a Pi (§6.1); `maxWidth` and
    `format: "jpeg"` (Pillow, §6.1) shrink what crosses the network, not the capture itself. The persistent tunnel's effect on the Apple TV's sleep is unmeasured.
 4. **The RemotePairing PIN length** isn't documented by Apple; the API accepts 4 to 8 digits for that
    step.
 5. **Only the focused element** is readable (label, value, identifier), not the whole screen, and only
-   once the focus has moved after screen reading connected or the screen last changed. A key that
+   once the focus has moved during an agent action, after the worker started following it and after
+   the screen last changed. A key that
    doesn't move the focus (`play_pause`, an edge of a grid) reports it unknown with `--settle`.
    `wait --idle` stays a heuristic without screen reading.
 6. **Keyboard**: Companion text input works only while a tvOS text field is focused; some apps use
