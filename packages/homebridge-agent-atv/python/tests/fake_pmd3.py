@@ -528,13 +528,12 @@ class FakePmd3:
         return list(self.elements)
 
     def move_focus(self, element: Optional[bytes]) -> None:
-        """tvOS moves its focus (a key press); None: nothing focused any more."""
-        followers = self._followers() if self.reports_focus else []
-        if not followers:
-            return
+        """tvOS moves its focus (a key press); None: nothing focused any more. While the monitored
+        type is 2 the daemon highlights the element, even with no session to tell."""
         self.focused = element
-        self.highlighted = element
-        for session in followers:
+        if self.monitored_type == 2:
+            self.highlighted = element
+        for session in self._followers() if self.reports_focus else []:
             session.fake_events.put_nowait(Event("hostInspectorCurrentElementChanged:", [self._inspector_focus(element)]))
 
     def relayout(self) -> None:

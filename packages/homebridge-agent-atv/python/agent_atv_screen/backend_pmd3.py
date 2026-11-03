@@ -61,8 +61,8 @@ class Timings:
     browse_s: float = 20.0
     pin_timeout_s: float = 120.0
     session_close_s: float = 1.0
-    # The Apple TV ends a session lost with its tunnel 20 to 35 s later, untargeting the one that follows.
-    retarget_s: float = 40.0
+    # The Apple TV ends a session lost with its tunnel 20 s or more later, untargeting the one that follows.
+    retarget_s: float = 30.0
 
 
 def _text(value: Any) -> Optional[str]:
@@ -489,27 +489,29 @@ class Pmd3Backend:
             await self._drop_accessibility()
             raise
         self._follower = asyncio.ensure_future(self._follow_focus(ax))
-        if self._lost_session_pending:
-            self._retarget = asyncio.ensure_future(self._retarget_after_loss(ax))
+        self._retarget = asyncio.ensure_future(self._keep_targeted(ax))
         return ax
 
-    async def _retarget_after_loss(self, ax: Any) -> None:
-        """Follows the focus again once the Apple TV has ended any session lost before it: that end
-        untargets the session, and targeting it again brings back notifications but not focus moves
-        until the monitored type is set again."""
-        await asyncio.sleep(self._timings.retarget_s)
-        try:
-            await asyncio.wait_for(self._target(ax), self._timings.call_timeout_s)
-        except Exception as exc:
-            _LOGGER.info("Targeting the accessibility session again failed (%s); focus reads may answer unknown until the next reconnect", _describe(exc))
-            return
-        _LOGGER.info(
-            "A session lost earlier may have untargeted this one: targeted the accessibility session again;"
-            " the focus is known again after the next move"
-        )
-        self._lost_session_pending = False
-        # The Apple TV did not report the moves made while the session was untargeted.
-        self._unknown, self._focused = NOT_FOLLOWED, None
+    async def _keep_targeted(self, ax: Any) -> None:
+        """Targets the session again and again: the Apple TV ends a session lost before it at no set
+        time, which untargets this one with no event to tell, and the daemon would then highlight
+        every focus move with nobody to clear it. Targeting it again brings back focus moves; it
+        costs about 70 ms and loses none (measured on tvOS 27.2)."""
+        failing = False
+        while True:
+            await asyncio.sleep(self._timings.retarget_s)
+            try:
+                await asyncio.wait_for(self._target(ax), self._timings.call_timeout_s)
+            except Exception as exc:
+                if not failing:
+                    _LOGGER.info("Targeting the accessibility session again failed (%s); retrying", _describe(exc))
+                failing = True
+                continue
+            failing = False
+            if self._lost_session_pending:
+                self._lost_session_pending = False
+                # The Apple TV may not have reported the moves made while the session was untargeted.
+                self._unknown, self._focused = NOT_FOLLOWED, None
 
     @staticmethod
     async def _target(ax: Any) -> None:

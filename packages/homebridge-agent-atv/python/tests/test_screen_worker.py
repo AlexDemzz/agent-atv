@@ -18,7 +18,7 @@ from tests.bridge_process import BridgeProcess
 from tests.in_process_bridge import InProcessBridge
 
 RECORD = "0A1B2C3D-0000-4000-8000-00000000AA01"
-# The late retarget makes the focus unknown: out of reach here, it fires only in LostSessionTest.
+# The retarget after a lost session makes the focus unknown: out of reach here, it fires only in LostSessionTest.
 FAST = Timings(retry_s=(0.05, 0.1), health_s=0.05, call_timeout_s=0.5, connect_timeout_s=0.5, browse_s=0.3, session_close_s=0.05, retarget_s=60)
 RETARGET = dataclasses.replace(FAST, retarget_s=0.15)
 
@@ -469,12 +469,18 @@ class LostSessionTest(ScreenWorkerTestCase):
         await self.move_focus(ARROW)
         self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
-    async def test_logs_the_late_retarget_at_info(self) -> None:
+    async def test_follows_the_focus_again_when_the_apple_tv_disposes_of_the_lost_session_after_the_first_retarget(self) -> None:
         await self.connected()
-        with self.assertLogs("agent_atv_screen", "INFO") as logs:
-            await asyncio.sleep(RETARGET.retarget_s + 0.05)
+        await self.kill_worker()
+        self.worker = self.start_worker()
+        await self.connected()
+        await asyncio.sleep(RETARGET.retarget_s + 0.05)
 
-        self.assertTrue(any("targeted the accessibility session again" in line for line in logs.output), logs.output)
+        self.pmd3.dispose_lost_sessions()
+        await asyncio.sleep(RETARGET.retarget_s + 0.05)
+
+        await self.move_focus(ARROW)
+        self.assertEqual((await self.worker.call("focus"))["focus"], ARROW_FOCUS)
 
     async def test_the_focus_is_unknown_once_followed_again_after_moves_the_disposal_hid(self) -> None:
         await self.connected()
