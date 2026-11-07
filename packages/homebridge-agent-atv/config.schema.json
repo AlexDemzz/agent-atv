@@ -7,12 +7,12 @@
   "footerDisplay": "Turn on Screen reading to let agents see the focused element and take screenshots; pairing then asks for one more PIN.",
   "schema": {
     "type": "object",
+    "required": ["name"],
     "properties": {
       "name": {
         "title": "Name",
         "type": "string",
-        "default": "Agent ATV",
-        "required": true
+        "default": "Agent ATV"
       },
       "api": {
         "title": "HTTP API",
@@ -64,12 +64,12 @@
         "type": "array",
         "items": {
           "type": "object",
+          "required": ["id"],
           "properties": {
             "id": {
               "title": "Device id",
               "description": "MAC address without separators (as listed by agent-atv devices) or any pyatv identifier.",
-              "type": "string",
-              "required": true
+              "type": "string"
             },
             "name": {
               "title": "Display name",
