@@ -54,6 +54,7 @@
   },
   "devDependencies": {
     "@homebridge/hap-nodejs": "^2.3.0",
+    "ajv": "^8.20.0",
     "homebridge": "^2.5.0"
   }
 }
