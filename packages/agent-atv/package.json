@@ -1,6 +1,6 @@
 {
   "name": "agent-atv",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "A CLI that lets AI agents observe and drive an Apple TV (snapshot, press, open, type, wait, screenshot).",
   "license": "MIT",
   "author": "AlexDemzz",
