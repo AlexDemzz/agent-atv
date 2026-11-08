@@ -1,5 +1,7 @@
 # homebridge-agent-atv
 
+[![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=flat)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
+
 A Homebridge plugin that lets AI agents drive an Apple TV. It exposes an authenticated HTTP API that the
 [`agent-atv`](https://www.npmjs.com/package/agent-atv) CLI talks to: remote keys, app launching,
 keyboard text input, wait conditions, power, volume, seek and optional screen reading (the focused
