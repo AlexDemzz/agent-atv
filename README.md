@@ -1,5 +1,7 @@
 # agent-atv
 
+[![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=flat)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
+
 Apple TV control for AI agents: a command-line tool, `agent-atv`, and the Homebridge plugin it talks
 to, `homebridge-agent-atv`. An agent drives the TV with one loop: **observe** (`snapshot`,
 `screenshot`) → **act** (`press`, `open`, `type`, `fill`; add `--settle` to see the focused element it

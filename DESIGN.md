@@ -1536,7 +1536,8 @@ sslpsk-pmd3: the host needs a C compiler and the Python and OpenSSL headers (Deb
 ## 7. Homebridge Verified compliance
 
 Criteria from https://github.com/homebridge/plugins/wiki/Verified-Plugins (last updated 2026-11-01),
-the single source of truth the verification issue template links to.
+the single source of truth the verification issue template links to. Verified on 2026-11-08
+(homebridge/plugins#1339); the READMEs carry the badge.
 
 | criterion | how the design meets it |
 | --- | --- |
