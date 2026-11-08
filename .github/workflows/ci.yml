@@ -48,12 +48,13 @@ jobs:
       - run: npm run test:python
 
   # W2: the screen worker's fake against the pinned pymobiledevice3, in its own env as in the plugin
-  # (its dependencies don't share pins with pyatv's). 3.11 builds sslpsk-pmd3 from source.
+  # (its dependencies don't share pins with pyatv's). Every supported Python, since the pins differ by
+  # version; below 3.13 it builds sslpsk-pmd3 from source.
   screen:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ['3.11', '3.13']
+        python: ['3.10', '3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

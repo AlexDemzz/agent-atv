@@ -49,17 +49,90 @@ const exists = (file: string) =>
     () => false,
   );
 
+const MARKER_PROBE =
+  'import platform, sys; print("%d.%d.%d" % sys.version_info[:3]); print(sys.platform); print(platform.python_implementation()); print(sys.implementation.name)';
+
+/** PEP 508 marker variables of the venv's interpreter. */
+type MarkerEnv = Record<string, string>;
+
 const normalizeRequirement = (line: string): string => {
   const [name = '', version = ''] = line.split('==');
   return `${name.trim().toLowerCase().replace(/[_.]+/g, '-')}==${version.trim()}`;
 };
 
-function requirementLines(text: string): string[] {
+const versionParts = (version: string): number[] => version.split('.').map((part) => Number.parseInt(part, 10) || 0);
+
+function compareVersions(left: string, right: string): number {
+  const a = versionParts(left);
+  const b = versionParts(right);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+const VERSION_VARIABLES = new Set(['python_version', 'python_full_version']);
+
+/** One `<variable> <op> '<value>'` clause; undefined when it is not one we can read. */
+function markerComparison(clause: string, env: MarkerEnv): boolean | undefined {
+  const [, variable = '', op, , expected = ''] = /^([a-z_]+)\s*(==|!=|<=|>=|<|>)\s*(['"])(.*)\3$/.exec(clause.trim()) ?? [];
+  const actual = env[variable];
+  if (actual === undefined) return undefined;
+  if (!VERSION_VARIABLES.has(variable)) {
+    if (op === '==') return actual === expected;
+    if (op === '!=') return actual !== expected;
+    return undefined;
+  }
+  if (expected.endsWith('.*') && (op === '==' || op === '!=')) {
+    const prefix = expected.slice(0, -2);
+    const matches = actual === prefix || actual.startsWith(`${prefix}.`);
+    return op === '==' ? matches : !matches;
+  }
+  const order = compareVersions(actual, expected);
+  switch (op) {
+    case '==': return order === 0;
+    case '!=': return order !== 0;
+    case '<': return order < 0;
+    case '<=': return order <= 0;
+    case '>': return order > 0;
+    default: return order >= 0;
+  }
+}
+
+/**
+ * Whether a requirement's environment marker holds in the venv. Reads the `and`/`or` comparisons a
+ * resolver writes. A marker it cannot read (parentheses, another variable, a failed probe) leaves the
+ * pin out of the check: counting it in would demand both of a pair like `pillow` 12 and 13, which can
+ * never be installed together, and reinstall on every start. `pip install -r` still evaluates it.
+ */
+function markerHolds(marker: string, env: MarkerEnv | null): boolean {
+  if (!env || /[()]/.test(marker)) return false;
+  const alternatives = marker.split(/\s+or\s+/).map((alternative) => alternative.split(/\s+and\s+/).map((clause) => markerComparison(clause, env)));
+  if (alternatives.flat().includes(undefined)) return false;
+  return alternatives.some((clauses) => clauses.every(Boolean));
+}
+
+function requirementLines(text: string, env: MarkerEnv | null = null): string[] {
   return text
     .split('\n')
-    .map((line) => line.replace(/#.*$/, '').trim())
-    .filter((line) => line !== '' && !line.startsWith('-') && line.includes('=='))
-    .map(normalizeRequirement);
+    .map((line) => line.replace(/#.*$/, '').split(';').map((part) => part.trim()))
+    .filter(([requirement = '']) => requirement !== '' && !requirement.startsWith('-') && requirement.includes('=='))
+    .filter(([, marker]) => marker === undefined || markerHolds(marker, env))
+    .map(([requirement = '']) => normalizeRequirement(requirement));
+}
+
+async function probeMarkerEnv(run: Run, venvPython: string, env: NodeJS.ProcessEnv): Promise<MarkerEnv | null> {
+  const probe = await run(venvPython, ['-c', MARKER_PROBE], { timeoutMs: SHORT_TIMEOUT_MS, env });
+  const [fullVersion, sysPlatform, pythonImplementation, implementationName] = probe.stdout.trim().split('\n');
+  if (probe.code !== 0 || !fullVersion || !sysPlatform || !pythonImplementation || !implementationName) return null;
+  return {
+    python_full_version: fullVersion,
+    python_version: fullVersion.split('.').slice(0, 2).join('.'),
+    sys_platform: sysPlatform,
+    platform_python_implementation: pythonImplementation,
+    implementation_name: implementationName,
+  };
 }
 
 /** Creates or repairs `<pluginDir>/.venv` with the pinned bridge requirements (DESIGN.md §5.2). */
@@ -115,7 +188,7 @@ export async function ensureVenv(options: EnsureVenvOptions): Promise<{ python: 
     throw new VenvError(`${venvPython} uses ${sslMatch[0]}; pyatv needs OpenSSL 3.0 or later. Upgrade the system Python and OpenSSL.`);
   }
 
-  const wanted = requirementLines(await readFile(requirementsPath, 'utf8'));
+  const wanted = requirementLines(await readFile(requirementsPath, 'utf8'), await probeMarkerEnv(run, venvPython, env));
   const freeze = await run(venvPython, ['-m', 'pip', 'freeze'], { timeoutMs: SHORT_TIMEOUT_MS, env });
   const installed = new Set(freeze.code === 0 ? requirementLines(freeze.stdout) : []);
   const missing = wanted.filter((line) => !installed.has(line));

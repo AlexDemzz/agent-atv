@@ -29,6 +29,9 @@ export class FakePython {
   installed: string[] = [];
   venvBaseExecutable = '';
   venvVersion = '';
+  sysPlatform = 'linux';
+  pythonImplementation = 'CPython';
+  markerProbeFails = false;
 
   constructor(
     readonly pluginDir: string,
@@ -72,6 +75,10 @@ export class FakePython {
     if (cmd === this.venvPython && existsSync(this.venvPython)) {
       if (args[0] === '-c' && joined.includes('_base_executable')) return ok(`${this.venvBaseExecutable}\n${this.venvVersion}\n`);
       if (args[0] === '-c' && joined.includes('OPENSSL_VERSION')) return ok(`${this.openssl}\n`);
+      if (args[0] === '-c' && joined.includes('python_implementation')) {
+        if (this.markerProbeFails) return fail('Traceback (most recent call last): ...');
+        return ok(`${this.venvVersion}\n${this.sysPlatform}\n${this.pythonImplementation}\n${this.pythonImplementation.toLowerCase()}\n`);
+      }
       if (joined === '-m pip freeze') return ok(`${this.installed.join('\n')}\n`);
       if (joined.startsWith('-m pip install --upgrade pip')) return this.pipUpgradeError ? fail(this.pipUpgradeError) : ok();
       if (joined.startsWith('-m pip install -r ')) {

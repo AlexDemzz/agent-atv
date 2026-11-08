@@ -148,6 +148,80 @@ describe('ensureVenv (P4)', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  describe('pins with environment markers', () => {
+    const SCREEN_REQUIREMENTS = [
+      'pymobiledevice3==11.49.1',
+      "pillow==12.3.0 ; python_full_version < '3.11'",
+      "pillow==13.0.0 ; python_full_version >= '3.11'",
+      "av==18.1.0 ; python_full_version == '3.11.*' and sys_platform != 'darwin'",
+      "av==19.0.2 ; python_full_version >= '3.12' and sys_platform != 'darwin'",
+      "sslpsk-pmd3==1.2.2 ; python_full_version < '3.13'",
+      "pywin32==312 ; sys_platform == 'win32'",
+      "cffi==2.1.1 ; platform_python_implementation != 'PyPy'",
+      "apple-compress==0.2.3 ; sys_platform == 'darwin' or sys_platform == 'ios'",
+      '',
+    ];
+
+    async function screenSetup(systemVersion: string) {
+      const context = await setup();
+      await writeFile(path.join(context.root, 'requirements.txt'), SCREEN_REQUIREMENTS.join('\n'));
+      context.python.systemVersion = systemVersion;
+      return context;
+    }
+
+    it('skips the install when every pin whose marker applies to the venv is installed', async () => {
+      const { python, ensure, cleanup } = await screenSetup('3.11.2');
+      python.createExistingVenv(['pip==25.0', 'pymobiledevice3==11.49.1', 'pillow==13.0.0', 'av==18.1.0', 'sslpsk-pmd3==1.2.2', 'cffi==2.1.1']);
+
+      await ensure();
+
+      expect(python.commands().some((c) => c.includes('pip install'))).toBe(false);
+      cleanup();
+    });
+
+    it.each([
+      ['3.11.2', 'the version pinned for another Python', ['pymobiledevice3==11.49.1', 'pillow==12.3.0', 'av==18.1.0', 'sslpsk-pmd3==1.2.2', 'cffi==2.1.1']],
+      ['3.11.2', 'a pin that only this Python needs missing', ['pymobiledevice3==11.49.1', 'pillow==13.0.0', 'av==18.1.0', 'cffi==2.1.1']],
+      ['3.13.1', 'a wildcard pin of 3.11 where 3.13 needs another', ['pymobiledevice3==11.49.1', 'pillow==13.0.0', 'av==18.1.0', 'cffi==2.1.1']],
+    ])('reinstalls on Python %s with %s', async (systemVersion, _case, installed) => {
+      const { python, ensure, cleanup } = await screenSetup(systemVersion);
+      python.createExistingVenv(installed);
+
+      await ensure();
+
+      expect(python.commands().some((c) => c.includes('-m pip install -r'))).toBe(true);
+      cleanup();
+    });
+
+    it.each([
+      ['a marker on a variable the probe does not read', "lzfse==0.4.2.post1 ; platform_machine == 'x86_64'", (_p: FakePython) => {}],
+      ['a parenthesized marker', "lzfse==0.4.2.post1 ; (sys_platform == 'win32' or sys_platform == 'cygwin')", (_p: FakePython) => {}],
+      ['a failed probe', "lzfse==0.4.2.post1 ; sys_platform == 'win32'", (p: FakePython) => (p.markerProbeFails = true)],
+      ['a non-exact pin with a == marker', "lzfse>=0.4 ; python_full_version == '3.11.2'", (_p: FakePython) => {}],
+    ])('does not reinstall on every start because of %s', async (_case, line, breakProbe) => {
+      const { root, python, ensure, cleanup } = await screenSetup('3.11.2');
+      await writeFile(path.join(root, 'requirements.txt'), ['pymobiledevice3==11.49.1', "pillow==12.3.0 ; python_full_version < '3.11'", "pillow==13.0.0 ; python_full_version >= '3.11'", line].join('\n'));
+      python.createExistingVenv(['pymobiledevice3==11.49.1', 'pillow==13.0.0']);
+      breakProbe(python);
+
+      await ensure();
+
+      expect(python.commands().some((c) => c.includes('pip install'))).toBe(false);
+      cleanup();
+    });
+
+    it('evaluates platform markers against the venv', async () => {
+      const { python, ensure, cleanup } = await screenSetup('3.13.1');
+      python.sysPlatform = 'darwin';
+      python.createExistingVenv(['pymobiledevice3==11.49.1', 'pillow==13.0.0', 'cffi==2.1.1', 'apple-compress==0.2.3']);
+
+      await ensure();
+
+      expect(python.commands().some((c) => c.includes('pip install'))).toBe(false);
+      cleanup();
+    });
+  });
+
   it('warns but continues when upgrading pip fails, and fails with the pip output when the install fails', async () => {
     const upgrade = await setup();
     upgrade.python.pipUpgradeError = 'network down';
