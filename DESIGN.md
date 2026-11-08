@@ -90,7 +90,7 @@ agent-atv/
     │   │   └── public/index.html     pairing UI, vanilla JS, no build step
     │   └── python/
     │       ├── requirements.txt      (S) pinned pyatv 0.18.0 dependency set
-    │       ├── requirements-screen.txt  pymobiledevice3==11.49.1, Pillow (screen venv, §5.2)
+    │       ├── requirements-screen.txt  pinned pymobiledevice3 11.49.1 dependency set, with Pillow (screen venv, §5.2)
     │       ├── agent_atv_bridge/
     │       │   ├── __init__.py       (S) BRIDGE_PROTOCOL_VERSION = 1, __version__ = "0.1.0"
     │       │   ├── __main__.py       (S placeholder) python -m agent_atv_bridge [--fake]
@@ -1068,7 +1068,12 @@ endless error loops and without its PyPI version lookup:
    is missing, if `forceVenvRecreate`, or if the venv's base interpreter (`sys._base_executable`
    realpath) or version differs from the system one. Failure hint: install `python3-venv`.
 4. `ssl.OPENSSL_VERSION` ≥ 3.0.0 (warn if unparsable, error if older).
-5. Compare `pip freeze` with `python/requirements.txt` (normalize `_`→`-`, case-insensitive). On any
+5. Compare `pip freeze` with `python/requirements.txt` (normalize `_`, `.`→`-`, case-insensitive).
+   A pin with an environment marker counts only when the marker holds in the venv: one probe reads
+   `python_full_version`, `python_version`, `sys_platform`, `platform_python_implementation` and
+   `implementation_name`, and `and`/`or` clauses over them are evaluated. A marker it can't read
+   (parentheses, another variable, a failed probe) leaves the pin out of the check, since counting it
+   would demand both pins of a pair and reinstall on every start; pip still applies it. On any
    mismatch: `pip install --upgrade pip` (failure is a warning), then `pip install -r requirements.txt`
    (5 min timeout).
 6. Any failure: bridge status `error` with the message, one error log with the fix, no bridge start,
@@ -1079,9 +1084,10 @@ Status is `installing` during steps 3–5. Exported as
 where `run(cmd, args, {timeoutMs, env}) → Promise<{code, stdout, stderr}>` is injected (§8 seam P4).
 
 With `screen.enabled`, the same bootstrap builds a second venv, `<pluginDir>/.venv-screen`, from
-`python/requirements-screen.txt` (`pymobiledevice3==11.49.1`; its dependencies resolve at install time
-and don't share pyatv's pins, hence the separate venv). It runs after the bridge started, so its first
-install (about 90 s on a Pi) delays nothing. A failure sets the screen status to `error`
+`python/requirements-screen.txt` (`pymobiledevice3==11.49.1` and its whole dependency set, Pillow
+included, resolved with `uv pip compile --universal --python-version 3.10`: markers pick the versions
+for each Python and platform; these pins don't match pyatv's, hence the separate venv). It runs
+after the bridge started, so its first install (about 90 s on a Pi) delays nothing. A failure sets the screen status to `error`
 (`SCREEN_NOT_CONFIGURED` with the message) and leaves the bridge alone.
 
 ### 5.3 Pairing flow
@@ -1348,7 +1354,7 @@ user: no root, no system service and no setting on the Apple TV beyond the pairi
 - **Screenshot**: `DvtProvider(rsd)` + `Screenshot(...).get_screenshot()`. `dtx._reader.MAX_BUFFERED_SIZE`
   is raised to 128 MiB: HDR 4K PNGs reach about 33 MB, over the 30 MiB default. DRM video (Netflix,
   Disney+) captures black; the focus still answers. With `maxWidth` or `format: "jpeg"` the worker
-  re-encodes the PNG with Pillow (a pymobiledevice3 dependency, also listed in `requirements-screen.txt`)
+  re-encodes the PNG with Pillow (a pymobiledevice3 dependency, pinned in `requirements-screen.txt`)
   on a thread, off the event loop: `thumbnail` to `maxWidth` keeping the aspect ratio and never
   scaling up, JPEG at Pillow's default quality. A PNG already no wider than `maxWidth` is written as
   captured. Measured end to end through the plugin's API (`X-Agent-ATV-Duration-Ms`) on a Pi 4
@@ -1566,7 +1572,7 @@ interface where behaviour is observed; fakes sit at the outermost boundary only.
 - **P1. HTTP API over a scripted fake bridge** (and, for screen reading, a scripted fake worker): `createAgentAtvCore({spawnBridge: fakeBridge, config: {api: {port: 0, bind: "127.0.0.1"}}, storagePath: tmpdir})`, requests via `fetch`; the fake bridge scripts responses, events, delays and crashes. Catches auth and token file, routes and validation, error → status + hint, device addressing, key sequencing, app name resolution, `open` and `wait --app` without screen reading, wait conditions and timeouts, seq/changedAt, the pairing state machine including credential-reuse fallback and the RemotePairing step (its begin failing into a `warning`, 4-digit checks, cancel, unpair), persisted files, bridge restart/backoff and `BRIDGE_TIMEOUT`, the 45 s `power.set` timeout and the `POWER_NOT_CONFIRMED` hint; misses real bridge semantics (P2) and HomeKit (P3).
 - **P2. Plugin ↔ real bridge contract**: the P1 harness with the default spawner and `AGENT_ATV_FAKE_BRIDGE=1` (real Python bridge in `--fake` mode); skipped when `python3` is absent. Catches protocol drift between the plugin and bridge builders (field names, events, error codes, pairing flow); misses pyatv.
 - **P3. Homebridge platform with a fake API**: call the default export of `src/index.ts` with a fake `api` (real HAP from `@homebridge/hap-nodejs`, an EventEmitter for `didFinishLaunching`/`shutdown`, recorded `publishExternalAccessories`) and a fake bridge. Catches platform registration, nothing started before `didFinishLaunching`, invalid config logged without throwing, Television/InputSource/Speaker characteristics driven by state, `onSet` → bridge calls, `onGet` never awaiting the bridge, the `Active` write answering before the power is confirmed, shutdown stopping the bridge; misses Home app behaviour and real Homebridge lifecycle quirks.
-- **P4. Venv bootstrap with a fake command runner**: `ensureVenv({..., run: fakeRun})` over a temp dir, for `.venv` and `.venv-screen`; plus the core reporting a failed screen venv. Catches create/recreate/install/skip decisions, Python and OpenSSL version gates, error statuses and hints; misses real pip, network and distro Python quirks.
+- **P4. Venv bootstrap with a fake command runner**: `ensureVenv({..., run: fakeRun})` over a temp dir, for `.venv` and `.venv-screen`; plus the core reporting a failed screen venv. Catches create/recreate/install/skip decisions (pins with environment markers included: another Python's or platform's pin, an unreadable marker), Python and OpenSSL version gates, error statuses and hints; misses real pip, network and distro Python quirks.
 - **P5. Screen routes with a scripted fake worker**: P1 harness with `spawnScreen` (`test/support/fake-screen.ts` speaks §6.2). Catches the worker spawn spec (args, `HOME`, env scrubbing), identifier persistence, worker restarts with the current address, bounded focus reads, `/focus`, `state?focus=1`, the settled focus after actions that send `"focus": true` and every unavailable report, `follow` sent before the Apple TV gets such an action and once at the start of `wait` on `focus` (a failing or hanging one costing the action nothing, none when unpaired or for a cold read), no read without it, `FOCUS_UNKNOWN` (409, report, `wait` on `focus` polling through it and never matching an unknown focus, a focus older than the last app or playback change), the settled read (the `follow` count as its baseline, 350 ms for arrows and 1 s for other keys and `open`, `moved` passed through, a plain read without a baseline and after typing), the foreground app (`state?app=1` for each kind and when unavailable, `open` polling it, timing out and returning at once with `foregroundUnknown`, `wait` on `app` never matching `ambiguous`), `POST /screen`, screenshots (temp file, sha256/304, headers, non-PNG, `maxWidth`/`format` pass-through and validation, `image/jpeg` with its size), status logs at info (a failing reconnect once) and worker INFO lines at info, error mapping and hints, `/info` and DeviceSummary `screen`; misses the real worker (W1, C2) and pymobiledevice3.
 - **P6. Config schema**: `config.schema.json` compiled with AJV 8 (`strict: false`), as the Homebridge verification checks do, then used to validate configs. Catches schema syntax the checks reject (such as `"required": true` on a field) and required fields (`name`, `devices[].id`) going missing; misses how the settings form renders the schema.
 
@@ -1594,7 +1600,7 @@ Its decisions sit behind routes P5 covers (`POST /screen`, the pairing flow).
   package lint scripts pass `--no-error-on-unmatched-pattern` so empty folders don't fail.
 - CI (`.github/workflows/ci.yml`): Node 22, 24 and 26 run `npm ci`, build, lint, typecheck, `npm test`
   (P2 needs `python3`) and `npm run test:e2e`; Python 3.10, 3.11 and 3.13 install `requirements.txt`
-  and run `npm run test:python` (B3 runs there); Python 3.14 runs it without pyatv; Python 3.11 and
+  and run `npm run test:python` (B3 runs there); Python 3.14 runs it without pyatv; Python 3.10 to
   3.13 install `requirements-screen.txt` alone and run it (W2 runs there).
 
 ## 10. Known risks / open questions
